@@ -1685,7 +1685,7 @@ impl Game<'_> {
     /// own players goes to the server's own players and into the mail of every other resident region (sent when
     /// the region is next lent); a line the server's hub relayed while regions were out goes into every region's
     /// mail. `mine` is the resident set being ticked, which is not among `self.regions.resident`.
-    fn route_region_chat(&mut self, mut mine: Option<&mut ResidentSet>) {
+    fn route_region_chat(&mut self, mine: Option<&mut ResidentSet>) {
         // (the region it was said in, 0 for the server's hub; the line)
         let mut lines: Vec<(u64, horizon_client::lan::hub::chat::RegionChat)> = Vec::new();
         if let Some(host) = self.lan.as_mut() {
