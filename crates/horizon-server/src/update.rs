@@ -1,8 +1,8 @@
 //! Updates and rollbacks (docs/server.md, section 7) for a `horizon-server` installed by install.sh or
 //! install.ps1: each release in `<dir>/releases/<tag>`, `<dir>/current` pointing at the one in use, and
-//! `<dir>/previous` naming the one before it. An update downloads the current Nightly from GitHub (the only build
-//! Horizon ships since 2026-10-28; GitHub's latest release while there is none), checks it against the SHA-256 in
-//! its signed SHA256SUMS (docs/security.md), unpacks it beside the others as `nightly-<date>-<commit>` and switches
+//! `<dir>/previous` naming the one before it. An update downloads the newest build from GitHub (its latest release, or the
+//! `nightly` pre-release of the Nightly-only period when that is newer), checks it against the SHA-256 in
+//! its signed SHA256SUMS (docs/security.md), unpacks it beside the others under its tag and switches
 //! `current`; the supervisor then restarts the game on it and switches back by itself if the new game doesn't come
 //! up.
 
@@ -264,19 +264,20 @@ fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(body)
 }
 
-/// The current Nightly (or `tag`: a release, `nightly` or a dated `nightly-<date>`), from GitHub's
-/// API, with the SHA-256 its signed checksums give for this computer's archive. With no Nightly
-/// published, GitHub's latest release.
+/// The newest build on GitHub (or `tag`: a release, `nightly` or a dated `nightly-<date>`), with the SHA-256 its
+/// signed checksums give for this computer's archive. The newest is GitHub's latest release, or the `nightly`
+/// pre-release when that is newer (the last builds before numbered releases came back, [`TagOrder`]); a server
+/// that still follows `nightly` finds its next update in the latest release this way.
 pub fn release(tag: Option<&str>) -> Result<Release, String> {
     let api = |tag: &str| format!("https://api.github.com/repos/{REPO}/releases/tags/{tag}");
+    let latest_url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let text = match tag {
         Some(tag) => fetch(&api(tag)),
-        None => match fetch(&api(horizon_release_sign::NIGHTLY)) {
-            Err(e) if e == "404" => fetch(&format!(
-                "https://api.github.com/repos/{REPO}/releases/latest"
-            )),
-            found => found,
-        },
+        None => {
+            let latest = fetch(&latest_url);
+            let nightly = fetch(&api(horizon_release_sign::NIGHTLY));
+            newest_of(latest, nightly)
+        }
     }
     .map_err(|e| match e.as_str() {
         "404" => format!("no release {} on GitHub", tag.unwrap_or("")),
@@ -284,6 +285,35 @@ pub fn release(tag: Option<&str>) -> Result<Release, String> {
     })?;
     let json = serde_json::from_slice(&text).map_err(|e| format!("GitHub's answer: {e}"))?;
     pick(&json, fetch, &horizon_release_sign::trusted_keys())
+}
+
+/// The newer of GitHub's latest release and the `nightly` pre-release (each an answer or an error). A missing
+/// one (404) leaves the other; when both exist, the later in [`TagOrder`] wins, a Nightly by its title's version.
+fn newest_of(
+    latest: Result<Vec<u8>, String>,
+    nightly: Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let version = |body: &[u8]| -> Option<String> {
+        let json: Value = serde_json::from_slice(body).ok()?;
+        let tag = json["tag_name"].as_str()?;
+        if horizon_release_sign::is_nightly(tag) {
+            Some(horizon_release_sign::nightly_version(
+                json["name"].as_str().unwrap_or_default(),
+                json["published_at"].as_str().unwrap_or_default(),
+            ))
+        } else {
+            Some(tag.to_owned())
+        }
+    };
+    match (latest, nightly) {
+        (Ok(latest), Ok(nightly)) => match (version(&latest), version(&nightly)) {
+            (Some(l), Some(n)) if newer(&n, &l) => Ok(nightly),
+            _ => Ok(latest),
+        },
+        (Ok(latest), Err(e)) if e == "404" => Ok(latest),
+        (Err(e), Ok(nightly)) if e == "404" => Ok(nightly),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    }
 }
 
 /// The archive for this computer in a release's JSON, with the SHA-256 the release's SHA256SUMS
@@ -384,13 +414,18 @@ fn pick_for_assets(
 /// tagged `vYYYY.MM.DD[.N]` (any `v` and numbers: `Dated`), compared number by number; from 0.2 they are
 /// `vMAJOR.MINOR.PATCH[-PRE]` (`Semver`), and every one of those is newer than every dated one, so
 /// v0.2.0 follows v2026.10.19.15. A pre-release (`v0.3.0-rc.1`) comes before its release, as in semver.
-/// Nightlies (`nightly-<date>-<commit>`, the only builds since 2026-10-28) follow every release, by date.
+/// Nightlies (`nightly-<date>-<commit>`, the builds from 2026-10-28 on) follow every release of the 0.2
+/// line and before, by date; a release of a later line (`v0.3.0` on) follows every Nightly.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum TagOrder {
     Dated(Vec<u64>),
     Semver([u64; 3], Prerelease),
     Nightly(String),
+    Current([u64; 3], Prerelease),
 }
+
+/// The newest release line that Nightlies are newer than: 0.2, the line in use when the game moved to Nightlies.
+const LAST_NIGHTLY_ERA_LINE: (u64, u64) = (0, 2);
 
 /// A pre-release's place: (is a release, its identifiers). A release has none and follows every
 /// pre-release of its version; identifiers compare one by one, numbers before words, and a shorter
@@ -439,6 +474,9 @@ fn tag_order(tag: &str) -> Option<TagOrder> {
                         .collect::<Option<_>>()?,
                 ),
             };
+            if (major, minor) > LAST_NIGHTLY_ERA_LINE {
+                return Some(TagOrder::Current([major, minor, patch], pre));
+            }
             Some(TagOrder::Semver([major, minor, patch], pre))
         }
         (_, None) => Some(TagOrder::Dated(numbers)),
@@ -1029,6 +1067,51 @@ mod tests {
         assert!(!update_available("nightly-2026-10-27-1a2b3c4", today));
         assert!(update_available("v0.2.96", "v0.2.95"));
         assert!(!update_available("v0.2.94", "v0.2.95"));
+    }
+
+    #[test]
+    fn a_release_of_a_line_after_0_2_follows_every_nightly() {
+        let nightly = "nightly-2026-11-22-0c02067";
+        assert!(newer("v0.3.0", nightly));
+        assert!(!newer(nightly, "v0.3.0"));
+        assert!(newer("v0.3.1", "v0.3.0"));
+        assert!(newer("v0.3.0", "v0.3.0-rc.1"));
+        assert!(update_available("v0.3.0", nightly));
+        assert!(!update_available(nightly, "v0.3.0"));
+        // The 0.2 line's last release is still older than a Nightly.
+        assert!(newer(nightly, "v0.2.95"));
+    }
+
+    #[test]
+    fn the_newest_of_latest_and_nightly_is_updated_to() {
+        let latest = |tag: &str| Ok(format!(r#"{{"tag_name":"{tag}"}}"#).into_bytes());
+        let nightly = Ok(
+            br#"{"tag_name":"nightly","name":"Nightly 2026-11-22 \u00b7 0c02067","published_at":"2026-11-22T10:00:00Z"}"#
+                .to_vec(),
+        );
+        let tag_of = |body: Result<Vec<u8>, String>| {
+            let json: Value = serde_json::from_slice(&body.unwrap()).unwrap();
+            json["tag_name"].as_str().unwrap().to_owned()
+        };
+        // The latest release of the 0.2 line is older than the Nightly; one of the 0.3 line is newer.
+        assert_eq!(
+            tag_of(newest_of(latest("v0.2.95"), nightly.clone())),
+            "nightly"
+        );
+        assert_eq!(
+            tag_of(newest_of(latest("v0.3.0"), nightly.clone())),
+            "v0.3.0"
+        );
+        // Whichever one is missing leaves the other; any other error stops the update.
+        assert_eq!(
+            tag_of(newest_of(Err("404".into()), nightly.clone())),
+            "nightly"
+        );
+        assert_eq!(
+            tag_of(newest_of(latest("v0.3.0"), Err("404".into()))),
+            "v0.3.0"
+        );
+        assert!(newest_of(latest("v0.3.0"), Err("GitHub didn't answer".into())).is_err());
     }
 
     #[test]

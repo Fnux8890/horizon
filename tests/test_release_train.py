@@ -299,6 +299,17 @@ class ReleaseTrainTests(unittest.TestCase):
         tags = ["v2026.10.15.09", "v2026.10.15.10", "v2026.10.15"]
         self.assertEqual(sorted(tags), sorted(tags, key=train.tag_key))
 
+    def test_the_game_goes_back_to_numbered_releases_on_a_new_line(self):
+        # The 0.2 line ended with the Nightlies (nightly-<date>-<commit> are not tags of this kind): the new
+        # line starts at its .0 and counts on from there, and every release of it follows every earlier one.
+        today = dt.date(2026, 11, 22)
+        old = ["v2026.10.21", "v0.2.80", "v0.2.81", "nightly-source/2026-11-20-0c02067"]
+        self.assertEqual(train.next_game_tag(old, today, (0, 3)), "v0.3.0")
+        self.assertTrue(train.first_on_line(old, train.GAME_PREFIX, (0, 3)))
+        self.assertEqual(train.next_game_tag(old + ["v0.3.0"], today, (0, 3)), "v0.3.1")
+        self.assertFalse(train.first_on_line(old + ["v0.3.0"], train.GAME_PREFIX, (0, 3)))
+        self.assertGreater(train.tag_key("v0.3.0"), train.tag_key("v0.2.81"))
+
     def test_launcher_tags_bump_the_patch_or_the_minor(self):
         tags = ["launcher-v0.1.3", "launcher-v0.1.10", "v2026.10.15", "launcher-v0.1.4"]
         self.assertEqual(train.next_launcher_tag(tags, minor=False), "launcher-v0.1.11")

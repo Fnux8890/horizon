@@ -206,6 +206,10 @@ def is_launcher_tag(tag):
     return re.fullmatch(r"launcher-v\d+\.\d+\.\d+", tag) is not None or semver(tag, LAUNCHER_PREFIX) is not None
 
 
+# The newest release line the Nightlies are newer than: 0.2, in use when the game moved to Nightlies.
+LAST_NIGHTLY_ERA_LINE = (0, 2)
+
+
 def tag_key(tag):
     """A tag's place among releases (docs/versioning.md): the tags from before 0.2 (vYYYY.MM.DD[.N],
     launcher-vX.Y.Z) by their numbers, trailing zeros dropped (v2026.10.19 is v2026.10.19.0); then every 0.2 tag
@@ -219,7 +223,8 @@ def tag_key(tag):
     *numbers, pre = version
     # A release follows its pre-releases; their identifiers compare one by one, numbers before words.
     rank = (1,) if pre is None else (0, tuple((0, int(i), "") if i.isdigit() else (1, 0, i) for i in pre.split(".")))
-    return 1, tuple(numbers), rank
+    # A line after 0.2 follows every Nightly, which follow the 0.2 line and before.
+    return (3 if tuple(numbers[:2]) > LAST_NIGHTLY_ERA_LINE else 1), tuple(numbers), rank
 
 
 def release_line(path=LINE_FILE):
@@ -584,6 +589,20 @@ def nightly_decision(release, reason, prs, building, built_today, force=False, c
     return True, reason, urgent
 
 
+def gather_game(head, tags, line):
+    """The game's last release and the pull requests merged since. The last release is the newest one tagged on the
+    release line; the line's first release (no tag on it yet) covers everything since the last published Nightly,
+    which the numbered releases took over from (docs/release-flow.md)."""
+    if line and not first_on_line(tags, GAME_PREFIX, line):
+        return gather("game", head, [r for r in published_releases() if semver(r["tag_name"], GAME_PREFIX)
+                                      and (semver(r["tag_name"], GAME_PREFIX)[:2] == line)])
+    nightly = published_nightly()
+    if nightly:
+        run("git", "fetch", "--quiet", "--force", "origin", "refs/tags/nightly:refs/tags/nightly")
+        return nightly, merged_between("game", "refs/tags/nightly", head)
+    return gather("game", head)
+
+
 def gather(kind, head, releases=None):
     """The last published release of this kind and the pull requests merged since, with their player-facing
     paths."""
@@ -686,12 +705,9 @@ def main():
         write_outputs({"release": "false", "reason": result["reason"]})
         return 0
     head = run("git", "rev-parse", head).strip()
-    nightly = published_nightly() if args.kind == "game" else None
-    if nightly:
-        run("git", "fetch", "--quiet", "--force", "origin", "refs/tags/nightly:refs/tags/nightly")
-        last, prs = nightly, merged_between("game", "refs/tags/nightly", head)
-    else:
-        last, prs = gather(args.kind, head)
+    tags = run("git", "tag", "--list").split()
+    line = release_line()
+    last, prs = gather_game(head, tags, line) if args.kind == "game" else gather(args.kind, head)
     if args.command == "notes":
         version = args.tag or "unreleased"
         previous = last["tag_name"] if last and last["tag_name"] != version else None
@@ -703,10 +719,8 @@ def main():
         print(title + "\n\n" + body)
         return 0
 
-    tags = run("git", "tag", "--list").split()
-    line = release_line()
     prefix = GAME_PREFIX if args.kind == "game" else LAUNCHER_PREFIX
-    new_line = f"{line[0]}.{line[1]}" if line and first_on_line(tags, prefix, line) and not nightly else None
+    new_line = f"{line[0]}.{line[1]}" if line and first_on_line(tags, prefix, line) else None
     blockers = open_blockers() if args.kind == "game" else []
     release, reason = decision(args.kind, prs, now, os.environ.get("RELEASES_PAUSED") == "1", args.force, new_line,
                                blockers)
@@ -717,7 +731,7 @@ def main():
         release, reason, urgent = nightly_decision(release, reason, prs, nightly_building(now),
                                                    len(nightly_builds_today(now.date().isoformat())), args.force)
     minor = any("feature" in pr["labels"] for pr in prs if pr["paths"])
-    tag = "nightly" if args.kind == "game" else next_launcher_tag(tags, minor, line)
+    tag = next_game_tag(tags, now.date(), line) if args.kind == "game" else next_launcher_tag(tags, minor, line)
     result = {
         "release": release, "reason": reason, "tag": tag, "head": head, "urgent": urgent,
         "last": last["tag_name"] if last else None, "last_published": last["published_at"] if last else None,

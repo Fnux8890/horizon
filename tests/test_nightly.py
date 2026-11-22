@@ -584,7 +584,7 @@ class PruneBuildsTests(unittest.TestCase):
         sign = build.split("\n  sign:", 1)[1].split("\n  publish:", 1)[0]
         self.assertIn("dist/horizon-source.tar.gz", sign.split("sign_release.sh nightly", 1)[1])
         publish = build.split("\n  publish:", 1)[1].split("\n  answer:", 1)[0]
-        self.assertIn('"dist/horizon-source.tar.gz#Source of this Nightly', publish)
+        self.assertIn('"dist/horizon-source.tar.gz#Source of this release', publish)
         self.assertIn('nightly.py keep-source "$SHA" "$DATE"', publish)
 
     def test_the_workflow_prunes_on_schedule_only(self):

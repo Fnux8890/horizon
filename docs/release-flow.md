@@ -2,9 +2,10 @@
 
 How a change gets from a pull request to players: the checks a pull request passes, how it merges, and the
 automatic releases that follow. Releases are automatic and frequent so the latest Horizon is always playable.
-Since 2026-10-28 Horizon ships only the **Nightly** (Ludovic's decision; the Team proposed it): the batch train builds
-a Nightly instead of a `vX.Y.Z` release, it is published once its smoke test passed and no `release-blocker` is open,
-and every launcher and `horizon-server update` install it ([Nightly only](#nightly-only)).
+Horizon has one channel: **the latest numbered release** (`v0.3.0`, `v0.3.1`, ...; [versioning.md](versioning.md)). The
+batch train builds it the way the Nightly was built, and it is published as GitHub's latest once its smoke test
+passed and no `release-blocker` is open; every launcher and `horizon-server update` install it
+([One channel](#one-channel)).
 
 ## Pull request checks
 
@@ -218,12 +219,12 @@ A pull request still runs its own parity job when it changes a harness script, a
 
 ## Game releases
 
-`.github/workflows/release.yml` is the batch train: it decides when a new Nightly goes out and starts
+`.github/workflows/release.yml` is the batch train: it decides when a new release goes out and starts
 `nightly build` (`.github/workflows/nightly-build.yml`, [Nightly channel](#nightly-channel)) on the commit it
 decided, which builds, signs and publishes it. It starts after every green `checks` or `parity-main` run of a push to
 main, every 10 minutes (so a batch waiting for merges to settle goes out without another merge), and by hand.
 
-The Nightly is built and published by `nightly build` alone, with the mod SDK of its commit ([Mod SDK](#mod-sdk)).
+The release is built and published by `nightly build` alone (named for the build it began as), with the mod SDK of its commit ([Mod SDK](#mod-sdk)).
 
 ```mermaid
 flowchart LR
@@ -237,7 +238,7 @@ flowchart LR
     decide -- otherwise --> wait(["wait"])
     nightly --> gate{"smoke test drew a world,<br/>no release-blocker is open"}
     gate -- no --> nothing(["nothing is published"])
-    gate -- yes --> publish["publish the nightly pre-release<br/>notes: what merged since the last one"]
+    gate -- yes --> publish["publish vX.Y.Z as the latest<br/>notes: what merged since the last one"]
     publish --> launcher(["every launcher and server installs it"])
     publish --> kira(["Kira posts it; the first after<br/>20:00 UTC pings, once a day"])
 ```
@@ -399,27 +400,29 @@ commits) since the commit the published Nightly was built on:
 - A scheduled run takes main's newest commit where `checks` and `parity-main` passed (a later failed
   parity-main batch doesn't change it); after a run of either, the commit it passed on, once both passed there.
 
-### Nightly only
+### One channel
 
-Ludovic decided on 2026-10-28 that Horizon ships only the Nightly. No `vX.Y.Z` game release is made any more:
-the last one stays GitHub's *latest*, so launchers and servers from before the switch (which don't read Nightlies)
-keep a working build until they update themselves. `.github/release-line.txt` still numbers the launcher's releases
-(`launcher@X.Y.Z`).
+From 2026-10-28 the game shipped only as Nightlies (`nightly-<date>-<commit>`). Since the release line moved to
+0.3 it ships as numbered releases again, built and published by the same pipeline, and the newest is the only
+channel: GitHub's latest.
 
-- **Launchers** (#3342) install the current `nightly` pre-release as their update, as the version
-  `nightly-<date>-<commit>`, after checking its checksums signed for the Nightly channel. A player on the newest
-  release, on a Nightly or on nothing moves to it at the next check; a version picked by hand or pinned by an
-  instance stays. Worlds are in the game's folder, never in a version's, so nothing touches them. The "Nightly
-  builds" setting is gone. The last week's Nightlies (`nightly-<date>`) and the old releases stay on the Versions
-  page. An instance on Stable set to Latest is offered the newest Nightly of each week and plays an installed
-  Nightly, never one of the old releases (up to `v0.2.97`) unless no Nightly is installed yet: they stay full
-  releases for `releases/latest`, but Stable skips them. A newer game release, not a pre-release, with a build for the player's platform replaces
-  that weekly Nightly.
-- **Servers** (#3331): `horizon-server update`, `install.sh` and `install.ps1` follow the Nightly the same way.
-- **Kira** posts each Nightly in #releases; the bug template asks for the version the game shows.
-- **Everyone gets the reviewers' picks.** A Nightly is main plus the pull requests the trusted reviewers picked
-  ([below](#trusted-reviewers-pick-the-nightlys-pull-requests)), so a pick reaches every player with the next
-  Nightly. `/nightly clear` makes it main alone.
+- **Numbers.** The next `vMAJOR.MINOR.PATCH` of the line in `.github/release-line.txt` (`tools/release_train.py`,
+  `next_game_tag`); the line's first release goes out as soon as the file changes, and its notes cover everything
+  since the last Nightly. The game, `--version` and crash reports say `0.3.N`. Reviewers' picks still go in (`/nightly`).
+- **Launchers** install GitHub's latest release as their update. A release of a line after 0.2 ranks above every
+  Nightly (`release_order`, `tag_key`, the server's `TagOrder`); the 0.2 line and the dated tags rank below
+  them. Nightlies already installed stay on the Versions page and keep working; worlds are never touched.
+- **Servers**: `horizon-server update`, `install.sh` and `install.ps1` take the newer of GitHub's latest release and the
+  `nightly` pre-release.
+- **The `nightly` bridge.** Launchers and servers from before the numbered releases only read the `nightly`
+  pre-release. Until the repository variable `NIGHTLY_BRIDGE` is `off`, every release is also published as `nightly`
+  (the previous one stays a week as `nightly-<date>`, never GitHub's latest), signed for the Nightly channel as
+  before. It carries the updater that follows the latest release, so one update moves everyone over. When the
+  last installs have moved, set `NIGHTLY_BRIDGE=off` and delete the bridge lines of `nightly-build.yml`.
+- **Signatures.** `SHA256SUMS.sig` of a release is signed for its tag (`horizon release v0.3.1`), as before the
+  Nightlies; `nightly build` signs it with the same keys as the bridge's (`ALSO_RELEASE` in
+  `tools/ci/sign_release.sh`) and `publish` checks both.
+- **Kira** posts each release in #releases; the bug template asks for the version the game shows.
 
 ### Labels
 
@@ -482,12 +485,12 @@ Kira posts every Nightly once in Discord's #releases. It pings the releases role
 Nightly published after 20:00 UTC, with a short list of what came out since its last ping. Every other post is
 silent (no ping and Discord's @silent flag). Launcher releases post without a ping.
 
-### One channel
+### History of the channel
 
 Before 2026-10-28 game releases were `vX.Y.Z` (numbering: [versioning.md](versioning.md)), each published by this
 workflow as the release and GitHub's *latest*. From 2026-10-23 there was one channel (the Alpha pre-releases and the
 daily promotion at 20:00 UTC ended: `promote.yml` and `tools/release_channels.py` are gone), and from 2026-10-27 the
-Nightly was opt-in beside it. Since 2026-10-28 the one channel is the Nightly ([Nightly only](#nightly-only)).
+Nightly was opt-in beside it. From 2026-10-28 to the move to the 0.3 line the one channel was the Nightly; now it is the latest numbered release ([One channel](#one-channel)).
 
 ### Signed checksums
 
@@ -552,10 +555,10 @@ open `release-blocker`. The reviewers' `/nightly` and the 20:17 UTC build still 
 
 ### Rolling back
 
-To stop the next Nightlies while a problem is fixed, label an issue about it `release-blocker`. The way out is
-forward: revert the pull request (or `/nightly remove` a pick), label the revert `release-now`, and a fixed Nightly
+To stop the next releases while a problem is fixed, label an issue about it `release-blocker`. The way out is
+forward: revert the pull request (or `/nightly remove` a pick), label the revert `release-now`, and a fixed release
 is out as soon as main's checks and parity-main pass. Meanwhile a player can pick an earlier build on the launcher's
-Versions page (the last week's `nightly-<date>`, or a `vX.Y.Z`), and `horizon-server update --version <tag>` does
+Versions page (an earlier `vX.Y.Z`, or a `nightly-<date>` from before), and `horizon-server update --version <tag>` does
 the same for a server.
 
 ## Prebuilt SDK retention design (horizon-rust/horizon, arismoko/horizon#3011)
@@ -892,9 +895,8 @@ comment on any issue or pull request (`.github/workflows/nightly-command.yml`, `
   saved. They don't read machine-shared caches: no sccache (`HORIZON_NO_SCCACHE`, `tools/ci/runner-env.sh`) and no
   cargo configuration from outside the checkout (`tools/ci/cargo_isolation.py` fails the job and names it), and
   each run starts from a fresh cargo home.
-- **Players.** Every launcher and `horizon-server update` install the `nightly` pre-release
-  ([Nightly only](#nightly-only)). It is never GitHub's latest: the last `vX.Y.Z` stays that, for launchers,
-  servers and `install.sh` from before the switch.
+- **Players.** Every launcher and `horizon-server update` install GitHub's latest release
+  ([One channel](#one-channel)); the `nightly` pre-release is only the bridge for installs from before, never the latest.
 
 ```sh
 gh workflow run "nightly build"                  # now; skips when the pick is the commit already published

@@ -565,9 +565,12 @@ pub enum ReleaseOrder {
     /// Numbers without trailing zeros, so 1.2 and 1.2.0 are equal.
     Before02(Vec<u64>),
     Semver([u64; 3], Prerelease),
-    /// A Nightly (`nightly-<date>-<commit>`), by its date: newer than every release, since the
-    /// Nightly is the only build Horizon ships.
+    /// A Nightly (`nightly-<date>-<commit>`), by its date: newer than every release of the 0.2
+    /// line and before, which were the last before Nightlies (2026-10-28).
     Nightly(String),
+    /// A release of a line after 0.2 (`v0.3.0` on): newer than every Nightly, since Horizon
+    /// ships numbered releases again and the newest one is the only channel.
+    Current([u64; 3], Prerelease),
 }
 
 /// (is a release, the pre-release's identifiers): a release follows every pre-release of its
@@ -641,8 +644,16 @@ fn semver_order(version: &str) -> Option<ReleaseOrder> {
                 .collect::<Option<_>>()?,
         ),
     };
+    // The 0.2 line ended with the Nightlies; a later line follows them all.
+    if (major, minor) > LAST_NIGHTLY_ERA_LINE {
+        return Some(ReleaseOrder::Current([major, minor, patch], pre));
+    }
     Some(ReleaseOrder::Semver([major, minor, patch], pre))
 }
+
+/// The newest release line (`major`, `minor`) that Nightlies are newer than: 0.2, the line in
+/// use when the game moved to Nightlies. Releases of a later line follow every Nightly.
+const LAST_NIGHTLY_ERA_LINE: (u64, u64) = (0, 2);
 
 /// Compares two tags or versions by [`release_order`].
 pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
@@ -7321,6 +7332,36 @@ pub fn {f}("
             crate::nightly::published_at("nightly-2026-11-19-5ef7734").as_deref(),
             Some("2026-11-20 02:32")
         );
+    }
+
+    /// Numbered releases came back after the Nightlies (docs/release-flow.md): a release of a line
+    /// after 0.2 is the update over every Nightly, and a Nightly never replaces it.
+    #[test]
+    fn a_numbered_release_after_the_nightlies_is_the_update() {
+        let asset = ASSET.unwrap_or("horizon-linux-x86_64.tar.gz");
+        let build = |url: &str| serde_json::json!([{"name": asset, "browser_download_url": url, "size": 1}]);
+        let list = serde_json::json!([
+            {"tag_name": "v0.3.0", "assets": build("r")},
+            {"tag_name": "nightly", "name": "Nightly 2026-11-22 · 9b772b2", "prerelease": true,
+             "published_at": "2026-11-22T09:58:01Z", "assets": build("n")},
+            {"tag_name": "v0.2.95", "assets": build("o")},
+        ]);
+        let releases = game_releases(&list);
+        let tags: Vec<_> = releases.iter().map(|r| r.tag.as_str()).collect();
+        assert_eq!(tags, ["v0.3.0", "nightly-2026-11-22-9b772b2", "v0.2.95"]);
+        let offered = |installed: &[&str]| {
+            let installed: Vec<String> = installed.iter().map(|t| t.to_string()).collect();
+            horizon_update(&installable_updates(&releases), &installed).map(|r| r.tag)
+        };
+        assert_eq!(
+            offered(&["nightly-2026-11-22-9b772b2"]).as_deref(),
+            Some("v0.3.0")
+        );
+        assert_eq!(offered(&["v0.2.95"]).as_deref(), Some("v0.3.0"));
+        assert_eq!(offered(&["v0.3.0"]), None);
+        assert!(compare_versions("v0.3.1", "v0.3.0").is_gt());
+        assert!(compare_versions("v0.3.0", "nightly-2026-11-22-9b772b2").is_gt());
+        assert!(compare_versions("nightly-2026-11-22-9b772b2", "v0.2.95").is_gt());
     }
 
     /// The Nightly is the only build Horizon ships (docs/release-flow.md): every launcher takes the

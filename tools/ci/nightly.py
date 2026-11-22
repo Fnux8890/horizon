@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""The Nightly, the only build Horizon ships (.github/workflows/nightly-build.yml, docs/release-flow.md "Nightly").
+"""The build and publish of a game release (.github/workflows/nightly-build.yml, docs/release-flow.md). The tool keeps
+its Nightly name: a release is built the way the Nightly was (main plus the reviewers' picks), numbered vX.Y.Z, and
+until the `nightly` bridge ends also published as the `nightly` pre-release servers and launchers from before follow.
+
 
     nightly.py pick [--force]      which commit tonight's nightly builds: GitHub outputs and nightly-notes.md
     nightly.py rotate              renames the current `nightly` pre-release to nightly-<its date>, frees the tag
@@ -172,6 +175,19 @@ def stop(repo: str, issue: str, text: str) -> None:
     sys.exit(1)
 
 
+def previous_release() -> tuple[str | None, str | None]:
+    """(tag, commit) of the game's last release: the newest numbered release of the release line, else (before the
+    line's first) the published `nightly`, whose commit its tag holds. (None, None) when there is neither."""
+    tags = git("tag", "--list").split()
+    line = train.release_line()
+    if line and not train.first_on_line(tags, train.GAME_PREFIX, line):
+        newest = max((t for t in tags if (v := train.semver(t, train.GAME_PREFIX)) and v[:2] == line and v[3] is None),
+                     key=train.tag_key)
+        return newest, git("rev-parse", f"{newest}^{{commit}}").strip()
+    sha = git("ls-remote", "--tags", "origin", "refs/tags/nightly").split("\t")[0]
+    return ("nightly" if sha else None), (sha or None)
+
+
 def build_set(main: Ref, prs: list[dict], left_out: list[str], today: str, force: bool, dry_run: bool) -> None:
     """main + the set, merged with git only (nightly_set.assemble), pushed as nightly/build-<date>-<n>."""
     repo, issue = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("NIGHTLY_ISSUE", "")
@@ -194,7 +210,9 @@ def build_set(main: Ref, prs: list[dict], left_out: list[str], today: str, force
         stop(repo, asked_in, f"the build stopped: {c.text()}")
     if repo == "horizon-rust/horizon" and sha != main.sha:
         stop(repo, issue, f"the build stopped: final source {sha} is not main's commit {main.sha}, the one an SDK is built for.")
-    previous = git("ls-remote", "--tags", "origin", "refs/tags/nightly").split("\t")[0] or None
+    previous_tag, previous = previous_release()
+    tags = git("tag", "--list").split()
+    tag = train.next_game_tag(tags, dt.date.fromisoformat(today), train.release_line())
     build = force or previous != sha
     name = "(unchanged)"
     if build:
@@ -222,10 +240,17 @@ def build_set(main: Ref, prs: list[dict], left_out: list[str], today: str, force
         if not dry_run:
             ns.update_state(lambda st, builds: (st, builds + json.dumps(record) + "\n", f"build {name}"), token)
     chosen = Ref(name, sha, dt.datetime.now(dt.timezone.utc))
+    merged = merged_since(previous, main.sha)
+    # The release's own notes and title (as every numbered release has them) and, for the `nightly` bridge that
+    # servers and launchers from before the numbered releases still follow, the Nightly's.
+    title, body = train.notes("game", tag, merged, train.known_issues(), previous=previous_tag)
+    Path("release-title.txt").write_text(title + "\n")
+    Path("release-notes.md").write_text(body + "\n" + source_line(today, chosen.sha) + "\n")
     with open("nightly-notes.md", "w") as f:
-        f.write(notes(today, chosen, main, kept, left_out, merged_since(previous, main.sha), train.known_issues()))
-    output(build=str(build).lower(), sha=sha, short=sha[:7], source=name, date=today, version=f"nightly-{today}",
-           nightly=f"{today} {sha[:7]}", source_tag=source_tag(today, sha))
+        f.write(notes(today, chosen, main, kept, left_out, merged, train.known_issues()))
+    # HORIZON_VERSION is the release's number; HORIZON_NIGHTLY stays empty: the game says 0.3.N, not a Nightly.
+    output(build=str(build).lower(), sha=sha, short=sha[:7], source=name, date=today, version=tag.removeprefix("v"),
+           tag=tag, nightly="", source_tag=source_tag(today, sha))
     print(f"{'build' if build else 'skip (unchanged since the last nightly)'}: {name} {sha}, main {main.sha[:7]}"
           + "".join(f" + #{e['number']}" for e in kept))
 
@@ -394,6 +419,7 @@ def pick(force: bool) -> None:
     # main's fetch and every network error still fail normally.
     if git("ls-remote", "--tags", "origin", "refs/tags/nightly").strip():
         refs.append("+refs/tags/nightly:refs/tags/nightly")
+    refs.append("+refs/tags/v*:refs/tags/v*")  # the numbered releases: the next number and the last build
     git("fetch", "--quiet", "origin", *refs)
     today = dt.datetime.now(dt.timezone.utc).date().isoformat()
     repo, token = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GH_TOKEN", "")

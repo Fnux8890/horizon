@@ -9,6 +9,9 @@
 # ALSO_FOR=<tag> (Nightlies) signs the same SHA256SUMS a second time, for "horizon release <ALSO_FOR>\n", into
 # SHA256SUMS.v2.sig, with the same key(s): the Nightly's own version (nightly-<date>-<commit>), which current
 # launchers require, while SHA256SUMS.sig stays signed for the channel for launchers from before (docs/security.md).
+# ALSO_RELEASE=<vX.Y.Z> (numbered releases, published beside the `nightly` bridge) signs it a third time, for
+# "horizon release <ALSO_RELEASE>\n", into SHA256SUMS.release.sig: the release is published with that file as its
+# SHA256SUMS.sig, and the first one (for the channel) goes to the bridge.
 #   tools/ci/sign_release.sh v2026.10.19 dist/horizon-linux-x86_64.tar.gz dist/horizon-windows-x64.zip ...
 #   ALSO_FOR=nightly-2026-10-28-0c02067 tools/ci/sign_release.sh nightly dist/...
 set -euo pipefail
@@ -29,12 +32,19 @@ also=${ALSO_FOR:-}
 if [[ -n "$also" && ! "$also" =~ ^nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{7,40}$ ]]; then
   echo "ALSO_FOR=$also: not a Nightly's nightly-<date>-<commit>" >&2; exit 1
 fi
+release=${ALSO_RELEASE:-}
+if [[ -n "$release" && ! "$release" =~ ^v[0-9]{1,3}\.[0-9]+\.[0-9]+$ ]]; then
+  echo "ALSO_RELEASE=$release: not a numbered release tag (vX.Y.Z)" >&2; exit 1
+fi
 (cd "$dir" && "${sha[@]}" -- "${names[@]}") > "$dir/SHA256SUMS"
 { printf 'horizon release %s\n' "$tag"; cat "$dir/SHA256SUMS"; } > "$work/message"
 if [[ -n "$also" ]]; then
   { printf 'horizon release %s\n' "$also"; cat "$dir/SHA256SUMS"; } > "$work/message.v2"
 fi
-rm -f "$dir/SHA256SUMS.sig" "$dir/SHA256SUMS.v2.sig" "$dir/ephemeral.pub"
+if [[ -n "$release" ]]; then
+  { printf 'horizon release %s\n' "$release"; cat "$dir/SHA256SUMS"; } > "$work/message.release"
+fi
+rm -f "$dir/SHA256SUMS.sig" "$dir/SHA256SUMS.v2.sig" "$dir/SHA256SUMS.release.sig" "$dir/ephemeral.pub"
 
 sign_one() {  # key file, message file, signature file to append to
   "$openssl" pkeyutl -sign -rawin -inkey "$1" -keyform DER -in "$2" -out "$work/signature"
@@ -48,6 +58,9 @@ sign_with() {  # the key file in $1: both messages, then the key goes
   sign_one "$1" "$work/message" "$dir/SHA256SUMS.sig"
   if [[ -n "$also" ]]; then
     sign_one "$1" "$work/message.v2" "$dir/SHA256SUMS.v2.sig"
+  fi
+  if [[ -n "$release" ]]; then
+    sign_one "$1" "$work/message.release" "$dir/SHA256SUMS.release.sig"
   fi
   rm -f "$1"
 }
