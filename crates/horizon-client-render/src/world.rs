@@ -489,6 +489,15 @@ impl World {
     /// A region's world from [`World::lend`] back in this one: its chunks and block entities, and what its
     /// ticks logged (sections to remesh, light to redo, writes), after this world's own.
     pub fn take_back(&mut self, region: World) {
+        self.merge_region(region, None);
+    }
+    /// A part of the level [`World::lend`] cut for a region that is already ticking, joining that region's world:
+    /// the chunks finished since it was lent, with their block entities and what is kept by their position.
+    /// `near` is what the lending world counts around the chunks ([`ChunkMap::near_around`]).
+    pub fn accept(&mut self, part: World, near: Vec<((i32, i32), u8)>) {
+        self.merge_region(part, Some(near));
+    }
+    fn merge_region(&mut self, region: World, handed: Option<Vec<((i32, i32), u8)>>) {
         let World {
             chunks,
             revision,
@@ -525,8 +534,17 @@ impl World {
         let in_region = |p: &(i32, i32, i32)| lent.contains(&(p.0 >> 4, p.2 >> 4));
         self.chest_openers.retain(|p, _| !in_region(p));
         self.block_names.retain(|p, _| !in_region(p));
-        self.chunks.take_back(chunks);
-        self.block_entities.take_back(block_entities);
+        match handed {
+            Some(near) => {
+                self.chunks.accept(chunks, near);
+                self.block_entities.accept(block_entities);
+                self.revision = self.revision.wrapping_add(1);
+            }
+            None => {
+                self.chunks.take_back(chunks);
+                self.block_entities.take_back(block_entities);
+            }
+        }
         for ((x, z), mask) in dirty_sections.columns() {
             self.dirty_sections.insert_column_mask((x, z), mask);
         }
@@ -1353,5 +1371,46 @@ mod region_tests {
         assert_eq!(world.chest_openers.len(), 1);
         assert!(world.chest_openers.contains_key(&(81, 64, 1)));
         assert!(world.block_names.is_empty());
+    }
+
+    /// A region that keeps ticking is handed a chunk finished since it was lent: the chunk and its per-chunk
+    /// records join the region's world, found by position, counted next to its neighbours, and new to whoever
+    /// watches the region's membership. The server's world no longer holds it.
+    #[test]
+    fn a_chunk_handed_to_a_running_region_joins_its_world() {
+        let mut server = World::new(BlockStateId(0), 1);
+        for x in 0..2 {
+            server.chunks.insert((x, 0), Arc::new(Chunk::empty(x, 0)));
+        }
+        // Chunk 0 is lent with its region; chunk 1 is finished later and handed over.
+        let mut parts = server.lend(1, |(x, _)| (x == 0).then_some(0), &[5]);
+        let mut region = parts.remove(0);
+        assert!(region.chunks.contains_key(&(0, 0)));
+        let seen = region.chunks.membership_revision();
+        server.inhabited.insert((1, 0), 42);
+        let mut part = server.lend(1, |(x, _)| (x == 1).then_some(0), &[6]);
+        let near = server.chunks.near_around(&[(1, 0)]);
+        region.accept(part.remove(0), near);
+        assert!(!server.chunks.contains_key(&(1, 0)));
+        assert!(region.chunks.contains_key(&(0, 0)));
+        assert!(region.chunks.contains_key(&(1, 0)));
+        assert_eq!(region.inhabited[&(1, 0)], 42);
+        assert_ne!(region.chunks.membership_revision(), seen);
+        assert_eq!(
+            region
+                .chunks
+                .deltas_since(seen)
+                .map(|d| d.collect::<Vec<_>>()),
+            Some(vec![(
+                region.chunks.membership_revision(),
+                crate::chunk_map::ChunkMembershipDelta::Added((1, 0))
+            )])
+        );
+        // The cells around the new chunk are counted as the whole level counts them.
+        assert!(!region.chunks.surrounded((1, 0)));
+        assert_eq!(region.chunks.near_around(&[(1, 0)]).len(), 9);
+        // Landing returns both.
+        server.take_back(region);
+        assert_eq!(server.chunks.len(), 2);
     }
 }

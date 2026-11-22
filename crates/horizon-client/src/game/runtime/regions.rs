@@ -664,6 +664,17 @@ impl Game<'_> {
         ids.extend(w.item_frames.iter().map(|f| f.id));
         ids.extend(w.cushions.iter().map(|c| c.id));
         ids.extend(w.others.iter().map(|o| o.id));
+        self.lend_entity_memory(w, ids);
+        w.lend_raids_from(self);
+        w.world.game_time = self.world.game_time;
+        w.world.day_time = self.world.day_time;
+        w.world.weather = self.world.weather;
+        w.world.health_rules = self.world.health_rules;
+        w.world.watched = self.world.watched.clone();
+    }
+
+    /// What the level keeps by entity id (`ids`), moved to region game `w` with the entities.
+    fn lend_entity_memory(&mut self, w: &mut Game<'_>, ids: Vec<u32>) {
         for id in ids {
             if let Some(attached) = self.entity_attachments.remove(&id) {
                 w.entity_attachments.insert(id, attached);
@@ -691,12 +702,79 @@ impl Game<'_> {
                 w.lead_killers.insert(id, v);
             }
         }
-        w.lend_raids_from(self);
-        w.world.game_time = self.world.game_time;
-        w.world.day_time = self.world.day_time;
-        w.world.weather = self.world.weather;
-        w.world.health_rules = self.world.health_rules;
-        w.world.watched = self.world.watched.clone();
+    }
+
+    /// Part of the level `part` added to region game `w`, which keeps its own chunks and goes on ticking: the
+    /// chunks the streaming finished since it was lent (`chunks`, `near`: [`World::accept`]), what stands or is
+    /// kept in them, and what the level kept for their mobs. [`Game::lend_region`] for a game that holds nothing.
+    fn extend_region(
+        &mut self,
+        w: &mut Game<'_>,
+        part: RegionPart,
+        chunks: &[ChunkPos],
+        near: Vec<((i32, i32), u8)>,
+    ) {
+        let mut ids: Vec<u32> = part.mobs.iter().map(|m| m.id).collect();
+        ids.extend(part.dropped.iter().map(|d| d.id));
+        ids.extend(part.boats.iter().map(|b| b.id));
+        ids.extend(part.carts.iter().map(|c| c.id));
+        ids.extend(part.armor_stands.iter().map(|s| s.id));
+        ids.extend(part.orbs.iter().map(|o| o.id));
+        ids.extend(part.projectiles.iter().map(|p| p.id));
+        ids.extend(part.falling.iter().map(|f| f.id));
+        ids.extend(part.tnts.iter().map(|t| t.id));
+        ids.extend(part.tridents.iter().map(|t| t.id));
+        ids.extend(part.rockets.iter().map(|r| r.id));
+        ids.extend(part.crystals.iter().map(|c| c.id));
+        ids.extend(part.bolts.iter().map(|b| b.id));
+        ids.extend(part.ominous_spawners.iter().map(|o| o.id));
+        ids.extend(part.breath_clouds.iter().map(|b| b.id));
+        ids.extend(part.paintings.iter().map(|p| p.id));
+        ids.extend(part.item_frames.iter().map(|f| f.id));
+        ids.extend(part.cushions.iter().map(|c| c.id));
+        ids.extend(part.others.iter().map(|o| o.id));
+        w.world.accept(part.world, near);
+        w.block_ticks.take_back(part.ticks, chunks);
+        w.random_tick_sections.take_back(part.sections);
+        // Its random sequences are the region's own: they were split from the level's once, when it was lent.
+        w.mobs.extend(part.mobs);
+        w.creaking.lend_scanned_more(part.scanned);
+        w.dropped.extend(part.dropped);
+        w.orbs.extend(part.orbs);
+        w.creatures.projectiles.extend(part.projectiles);
+        w.falling.extend(part.falling);
+        w.paintings.extend(part.paintings);
+        w.item_frames.extend(part.item_frames);
+        w.armor_stands.extend(part.armor_stands);
+        w.cushions.extend(part.cushions);
+        w.others.append(&mut part.others.into_iter().collect());
+        w.boats.extend(part.boats);
+        w.carts.extend(part.carts);
+        w.bolts.extend(part.bolts);
+        w.crystals.extend(part.crystals);
+        w.breath_clouds
+            .append(&mut part.breath_clouds.into_iter().collect());
+        w.tridents.extend(part.tridents);
+        w.rockets.extend(part.rockets);
+        w.ominous_spawners
+            .append(&mut part.ominous_spawners.into_iter().collect());
+        w.tnts.extend(part.tnts);
+        w.hoppers.extend(part.hoppers);
+        w.jukebox_sounds.extend(part.jukebox_sounds);
+        w.lid_openers.extend(part.lid_openers);
+        w.knot_ids.extend(part.knot_ids);
+        w.lectern_pulses.extend(part.lectern_pulses);
+        let a = &mut w.be_anims;
+        a.chests.extend(part.anims.chests);
+        a.books.extend(part.anims.books);
+        a.shulkers.extend(part.anims.shulkers);
+        a.bells.extend(part.anims.bells);
+        a.conduits.extend(part.anims.conduits);
+        a.skulls.extend(part.anims.skulls);
+        a.pots.extend(part.anims.pots);
+        a.gateway_servers.extend(part.anims.gateway_servers);
+        a.conduit_servers.extend(part.anims.conduit_servers);
+        self.lend_entity_memory(w, ids);
     }
 
     /// The players this game's host holds, and their fishing hooks, bound to this game's own entity table: after
@@ -1069,6 +1147,8 @@ impl Game<'_> {
         }
         self.streaming.lent = Some(Arc::clone(&set.lent));
         self.deliver_away_out_home();
+        // Chunks the streaming finished in a lent region's area go to its game at once, with no landing.
+        let mut finished = self.finished_for_regions(&set);
         let pool = Arc::clone(
             self.regions
                 .entity_pool
@@ -1117,6 +1197,18 @@ impl Game<'_> {
             let Some(mut w) = slot.game.take() else {
                 continue;
             };
+            let keys = std::mem::take(&mut finished[k]);
+            if !keys.is_empty() {
+                let handing = std::time::Instant::now();
+                let chunks = self.hand_chunks(&set.layout, k, &mut w, &keys);
+                self.streaming.lent = None;
+                let lent = Arc::make_mut(&mut set.lent);
+                lent.extend(chunks.iter().map(|c| (c.x, c.z)));
+                set.chunks[k].extend(chunks);
+                self.streaming.lent = Some(Arc::clone(&set.lent));
+                self.regions.prof.add(Step::Handoff, handing);
+                self.regions.prof.handed(keys.len());
+            }
             let copying = std::time::Instant::now();
             if first || std::mem::take(&mut slot.fresh) {
                 w.copy_tick_settings_from(self);
@@ -1423,6 +1515,82 @@ impl Game<'_> {
             }
         }
         (!slots.is_empty()).then_some(Land::Slots(slots))
+    }
+
+    /// The chunks of the server's world that a lent region owns and the streaming has finished (lit, post-processing
+    /// done), for each resident region: what [`Game::hand_chunks`] takes to it. A chunk waits until its eight
+    /// neighbours are lit too (or lent, or none the streaming keeps): the streaming lights a chunk from its neighbours in the server's world,
+    /// and one handed away before then would leave them unlit.
+    fn finished_for_regions(&self, set: &ResidentSet) -> Vec<Vec<(i32, i32)>> {
+        let mut out: Vec<Vec<(i32, i32)>> = vec![Vec::new(); set.games.len()];
+        let chunks = &self.world.chunks;
+        for (&key, c) in chunks.iter() {
+            let Some(k) = set.layout.of_chunk(key) else {
+                continue;
+            };
+            if !c.lit || !c.postprocess.is_empty() || set.games[k].landed {
+                continue;
+            }
+            let settled = (-1..=1).all(|dz| {
+                (-1..=1).all(|dx| {
+                    let n = (key.0 + dx, key.1 + dz);
+                    n == key
+                        || match chunks.get(&n) {
+                            Some(c) => c.lit,
+                            None => set.lent.contains(&n) || !self.streaming.keeps(n.0, n.1),
+                        }
+                })
+            });
+            if settled {
+                out[k].push(key);
+            }
+        }
+        out
+    }
+
+    /// The finished chunks `keys` of the server's level, region `k`'s by the layout, moved into region game `w`
+    /// with what stands or is kept in them, without the region coming home: it takes them in at its next tick.
+    /// Returns the chunks handed over, for the set's own lists.
+    fn hand_chunks(
+        &mut self,
+        layout: &Arc<Regions>,
+        k: usize,
+        w: &mut Game<'_>,
+        keys: &[(i32, i32)],
+    ) -> Vec<ChunkPos> {
+        let Some(mut host) = self.lan.take() else {
+            return Vec::new();
+        };
+        let dim = self.dim;
+        let pick: FxHashSet<(i32, i32)> = keys.iter().copied().collect();
+        let layout = Arc::clone(layout);
+        layout.restrict(Some(k));
+        let tracker = host
+            .hub
+            .lend_trackers(1, |chunk| {
+                layout.of_chunk(chunk).filter(|_| pick.contains(&chunk))
+            })
+            .into_iter()
+            .next();
+        let split = self.split_level_of(&layout, Some(&pick));
+        layout.restrict(None);
+        let part = split
+            .parts
+            .into_iter()
+            .next()
+            .expect("a part for the region");
+        let chunks = split.chunks.into_iter().next().unwrap_or_default();
+        let mob_ids: Vec<u32> = part.mobs.iter().map(|m| m.id).collect();
+        let near = self.world.chunks.near_around(keys);
+        self.extend_region(w, part, &chunks, near);
+        if let Some(shell) = w.lan.as_mut() {
+            host.lend_mob_state(shell, mob_ids.into_iter(), dim);
+            if let Some(tracker) = tracker {
+                shell.hub.accept_tracker(tracker);
+            }
+        }
+        self.lan = Some(host);
+        chunks
     }
 
     /// Region `k` alone back in the server's level: it ticks there with the server's thread this tick, and is
@@ -1889,6 +2057,8 @@ fn split<T>(v: &mut Vec<T>, regions: &Lending<'_>, at: impl Fn(&T) -> (f64, f64)
 pub(super) struct Lending<'a> {
     layout: &'a Regions,
     held: &'a FxHashSet<(i32, i32)>,
+    /// When set, only these chunks are lent ([`Game::hand_chunks`]).
+    pick: Option<&'a FxHashSet<(i32, i32)>>,
 }
 
 impl Lending<'_> {
@@ -1902,7 +2072,7 @@ impl Lending<'_> {
 
     /// The region chunk `key` and what is in it are lent to, if any.
     fn of_chunk(&self, key: (i32, i32)) -> Option<usize> {
-        if self.held.contains(&key) {
+        if self.held.contains(&key) || self.pick.is_some_and(|p| !p.contains(&key)) {
             return None;
         }
         self.layout.of_chunk(key)
@@ -2016,6 +2186,15 @@ impl Game<'_> {
     /// entities moved out of this game's level; what no region owns stays, and so do the chunks the streaming has
     /// not finished, with what is in them ([`Lending`]).
     pub(super) fn split_level(&mut self, layout: &Regions) -> LevelSplit {
+        self.split_level_of(layout, None)
+    }
+
+    /// [`Game::split_level`], but of the chunks in `pick` alone when it is given.
+    fn split_level_of(
+        &mut self,
+        layout: &Regions,
+        pick: Option<&FxHashSet<(i32, i32)>>,
+    ) -> LevelSplit {
         let held: FxHashSet<(i32, i32)> = self
             .world
             .chunks
@@ -2026,6 +2205,7 @@ impl Game<'_> {
         let regions = &Lending {
             layout,
             held: &held,
+            pick,
         };
         let n = regions.parts();
         let first = regions.only_region().unwrap_or(0);
@@ -2249,6 +2429,7 @@ mod tests {
         let lending = Lending {
             layout: &regions,
             held: &Default::default(),
+            pick: None,
         };
         let parts = split_list(&mut mobs, &lending, |m| (m.x, 0.0));
         assert_eq!(parts.len(), 1);
@@ -2264,6 +2445,7 @@ mod tests {
         let lending = Lending {
             layout: &regions,
             held: &held,
+            pick: None,
         };
         let parts = split_list(&mut mobs, &lending, |m| (m.x, 0.0));
         let lent: Vec<u32> = parts[0].iter().map(|m| m.id).collect();

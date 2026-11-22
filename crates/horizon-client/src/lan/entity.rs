@@ -1208,6 +1208,16 @@ impl Entities {
         self.parked.extend(region.states.extract_if(|_| true));
     }
 
+    /// The states of a tracker [`Entities::lend`] cut for chunks a region was handed after it was lent its own.
+    pub fn accept(&mut self, mut part: Entities) {
+        for (id, s) in part.states.extract_if(|_| true) {
+            self.states.set(id, s);
+        }
+        for (id, s) in std::mem::take(&mut part.parked) {
+            self.states.set(id, s);
+        }
+    }
+
     /// The parked states among this tracker's own again: they are the newer.
     pub fn unpark(&mut self) {
         for (id, s) in std::mem::take(&mut self.parked) {

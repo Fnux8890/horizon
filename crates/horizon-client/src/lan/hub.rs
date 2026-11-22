@@ -3978,6 +3978,15 @@ impl Hub {
         self.entities.insert(self.config.dimension.clone(), tracker);
     }
 
+    /// The states of a tracker cut for chunks a region was handed after it was lent its own, joining this
+    /// (region) hub's tracker.
+    pub fn accept_tracker(&mut self, part: Entities) {
+        self.entities
+            .entry(self.config.dimension.clone())
+            .or_default()
+            .accept(part);
+    }
+
     /// A region hub's tracker back in this (the server's) hub's, parked.
     pub fn park_tracker(&mut self, region: &mut Hub) {
         if let Some(t) = region.entities.remove(&region.config.dimension) {

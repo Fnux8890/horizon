@@ -161,14 +161,24 @@ impl LanHost {
             }
         }
         let entity_ids: Vec<u32> = r.hub.guests.iter().map(|g| g.entity_id as u32).collect();
+        self.lend_mob_state(r, mobs.iter().chain(&entity_ids).copied(), dim);
+    }
+
+    /// What is kept for the mobs `ids` (the guest each sees, its hurt and swing state), lent to region host `r`.
+    pub(super) fn lend_mob_state(
+        &mut self,
+        r: &mut LanHost,
+        ids: impl Iterator<Item = u32>,
+        dim: super::Dim,
+    ) {
         let states = self.mob_state.entry(dim).or_default();
         let region_states = r.mob_state.entry(dim).or_default();
-        for id in mobs.iter().chain(&entity_ids) {
-            if let Some(c) = self.mob_players.remove(id) {
-                r.mob_players.insert(*id, c);
+        for id in ids {
+            if let Some(c) = self.mob_players.remove(&id) {
+                r.mob_players.insert(id, c);
             }
-            if let Some(s) = states.remove(id) {
-                region_states.insert(*id, s);
+            if let Some(s) = states.remove(&id) {
+                region_states.insert(id, s);
             }
         }
     }

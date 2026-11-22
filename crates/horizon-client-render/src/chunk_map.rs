@@ -652,6 +652,40 @@ impl ChunkMap {
             self.cache_slot(key);
         }
     }
+    /// How many of the 3×3 columns around each of `keys` this map counts as resident (`near`), for
+    /// [`ChunkMap::accept`]: what a map lent chunks later is told of the chunks' surroundings.
+    pub fn near_around(&self, keys: &[Key]) -> Vec<(Key, u8)> {
+        let mut out = FxHashMap::default();
+        for &(x, z) in keys {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let cell = (x + dx, z + dz);
+                    if let Some(&n) = self.near.get(&cell) {
+                        out.insert(cell, n);
+                    }
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+    /// Chunks [`ChunkMap::lend`] lent out of another map, joining this one while it stays lent (a region that
+    /// keeps ticking is handed the chunks finished since). They are new members here: consumers of this map's
+    /// membership see them added. `near` is what the lending map counts around them ([`ChunkMap::near_around`]):
+    /// a region counts the neighbours it was not lent as the whole level does.
+    pub fn accept(&mut self, mut lent: ChunkMap, near: impl IntoIterator<Item = (Key, u8)>) {
+        for (key, chunk) in lent.columns.drain() {
+            self.touch(key);
+            if lent.fresh.remove(&key) {
+                self.fresh.insert(key);
+            }
+            if self.columns.insert(key, chunk).is_none() {
+                self.revision = next_revision();
+                self.record_delta(ChunkMembershipDelta::Added(key));
+            }
+            self.cache_slot(key);
+        }
+        self.near.extend(near);
+    }
     pub fn values_mut(&mut self) -> ValuesMut<'_, Key, Arc<Chunk>> {
         self.touch_all();
         self.invalidate_grid();

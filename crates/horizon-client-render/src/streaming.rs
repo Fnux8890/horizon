@@ -2667,6 +2667,11 @@ impl Streaming {
     fn near_finished(&self, x: i32, z: i32, reach: i32) -> bool {
         self.ranges().near_finished(x, z, reach)
     }
+    /// Whether the streaming keeps chunk `(x, z)` loaded, or loads it, as the players' areas stand now: one that
+    /// is not is never lit from its neighbours, and nothing waits for it.
+    pub fn keeps(&self, x: i32, z: i32) -> bool {
+        self.ranges().chunk_kept(x, z, self.decorates)
+    }
     /// Abort unvisited background chunk generation, decoration, and meshing on world exit.
     pub fn abort_generation(&mut self) {
         self.shared

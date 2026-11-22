@@ -24,6 +24,8 @@ pub(super) enum Step {
     Copy,
     /// Starting the region threads, second part: the threads started.
     Spawn,
+    /// Finished chunks handed to a resident region's game, with no landing.
+    Handoff,
     /// Waiting for the regions, up to the deadline.
     Wait,
     /// The regions coming home: the level and the players put back.
@@ -35,7 +37,7 @@ pub(super) enum Step {
     /// The world tick's later phases: sculk, sleep, the End, particles, bossbars.
     Late,
 }
-const STEPS: usize = 14;
+const STEPS: usize = 15;
 const NAMES: [&str; STEPS] = [
     "prelude",
     "stream",
@@ -46,6 +48,7 @@ const NAMES: [&str; STEPS] = [
     "split",
     "copy",
     "spawn",
+    "handoff",
     "wait",
     "land",
     "leftover",
@@ -69,6 +72,9 @@ pub(super) struct TickProfile {
     /// Ticks this window that landed regions, and ticks that split the level.
     lands: u32,
     splits: u32,
+    /// Chunks handed to resident regions this window, and the hand-offs that carried them.
+    handed: u32,
+    handoffs: u32,
     started: Option<Instant>,
 }
 
@@ -90,6 +96,12 @@ impl TickProfile {
             Some(r) => r.1 += 1,
             None => self.reasons.push((why, 1)),
         }
+    }
+
+    /// Notes `chunks` finished chunks handed to a resident region.
+    pub fn handed(&mut self, chunks: usize) {
+        self.handed += chunks as u32;
+        self.handoffs += 1;
     }
 
     /// Notes that regions are resident this tick.
@@ -127,6 +139,8 @@ impl TickProfile {
         let reasons = std::mem::take(&mut self.reasons);
         let (lands, splits) = (self.lands, self.splits);
         (self.lands, self.splits) = (0, 0);
+        let (handed, handoffs) = (self.handed, self.handoffs);
+        (self.handed, self.handoffs) = (0, 0);
         self.ticks = 0;
         if !resident {
             return;
@@ -151,7 +165,7 @@ impl TickProfile {
             (sum[Step::Leftover as usize] + sum[Step::Lan as usize] + sum[Step::Late as usize]) / n;
         log::info!(
             "regions: wait {:.1} ms, global {global:.1} ms, landing {:.1} ms (avg), landing ticks {} (avg {landing_avg:.1} ms, {landing_max:.1} ms max); \
-             tick avg {:.1} p50 {:.1} p95 {:.1} p99 {:.1} max {:.1} ms; per tick: {}, other {:.1}; {lands} landings, {splits} splits, landed for: {}",
+             tick avg {:.1} p50 {:.1} p95 {:.1} p99 {:.1} max {:.1} ms; per tick: {}, other {:.1}; {lands} landings, {splits} splits, {handed} chunks handed over in {handoffs} hand-offs, landed for: {}",
             sum[Step::Wait as usize] / n,
             (sum[Step::Land as usize]
                 + sum[Step::Split as usize]

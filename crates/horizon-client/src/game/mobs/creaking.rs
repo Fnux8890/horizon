@@ -464,6 +464,13 @@ impl CreakingState {
     ) {
         self.scanned = scanned;
     }
+    /// More chunks, handed to a region game that keeps ticking, already scanned for creaking hearts.
+    pub(super) fn lend_scanned_more(
+        &mut self,
+        scanned: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
+    ) {
+        self.scanned.extend(scanned);
+    }
     /// A region game's scanned chunks back.
     pub(super) fn take_scanned_back(&mut self, region: &mut Self) {
         self.scanned.extend(region.scanned.drain());

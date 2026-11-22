@@ -709,6 +709,40 @@ impl BlockEntities {
         }
     }
 
+    /// A set from [`BlockEntities::lend`] for chunks a region was handed after it was lent its own, joining the
+    /// region's set: the block entities and what is kept by their position, and their copies of the level's
+    /// slots in the ticking list. The region's journal of slots it makes and frees goes on as it was.
+    pub fn accept(&mut self, mut part: BlockEntities) {
+        self.borrowed.append(&mut part.borrowed);
+        self.map.extend(part.map.drain());
+        self.generations.extend(part.generations.drain());
+        self.attachments.extend(part.attachments.drain());
+        self.on_load.append(&mut part.on_load);
+        self.out.extend(part.out.drain());
+        self.replaced.extend(part.replaced.drain());
+        self.asleep.extend(part.asleep.drain());
+        self.boxes.extend(part.boxes.drain());
+        self.sign_editors.extend(part.sign_editors.drain());
+        self.carried.extend(part.carried.drain());
+        self.client_snapshots.extend(part.client_snapshots.drain());
+        for (all, theirs) in self.listed.iter_mut().zip(&mut part.listed) {
+            all.extend(theirs.drain());
+        }
+        for (chunk, positions) in part.by_chunk.drain() {
+            self.by_chunk.entry(chunk).or_default().extend(positions);
+        }
+        for (chunk, set) in part.mods.drain() {
+            self.mods.entry(chunk).or_default().extend(set);
+        }
+        self.live.extend(part.live.drain());
+        self.pending.extend(part.pending.drain());
+        self.added.append(&mut part.added);
+        if !part.tickers.is_empty() {
+            Arc::make_mut(&mut self.tickers).extend(part.tickers.iter().copied());
+        }
+        self.next_slot = self.next_slot.max(part.next_slot);
+    }
+
     /// Attachment map for a live block entity.
     pub fn attachments_mut(
         &mut self,
