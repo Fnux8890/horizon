@@ -2649,6 +2649,11 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         self.native_configs_server_stop();
         log("INFO", "Stopping server");
+        // Players away in resident regions come home first: the logout callbacks and the player saves below
+        // walk the server's own hub, which does not hold them, and each callback fires only once.
+        if !crashed {
+            self.land_residents();
+        }
         self.native_players_leaving();
         log("INFO", "Saving players");
         // PlayerList.removeAll: each player's file, with the vehicle it

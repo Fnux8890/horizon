@@ -656,6 +656,11 @@ pub(super) struct Maps {
     pub data: HashMap<i32, MapData>,
     /// The highest map id handed out (`maps/last_id.dat`), loaded on first use.
     last_id: Option<i32>,
+    /// The last id handed out, shared with the region games while the server lends them its players: one
+    /// counter for every thread, so two regions never give the same id.
+    pool: Option<std::sync::Arc<std::sync::atomic::AtomicI32>>,
+    /// The last id when this region game was lent: the maps it made have higher ids.
+    lent_base: i32,
     /// The atlas slots holding map textures.
     pub slots: super::atlas_slots::AtlasSlots<i32>,
     missing: std::collections::HashSet<i32>,
@@ -665,6 +670,8 @@ impl Default for Maps {
         Self {
             data: HashMap::new(),
             last_id: None,
+            pool: None,
+            lent_base: -1,
             slots: super::atlas_slots::AtlasSlots::new(MAP_SLOTS),
             missing: Default::default(),
         }
@@ -967,23 +974,66 @@ impl Game<'_> {
         // The server owns a remote map: only the texture has to change.
         map.dirty = false;
     }
-    fn next_map_id(&mut self) -> i32 {
-        let last = *self.maps.last_id.get_or_insert_with(|| {
+    fn loaded_last_id(&mut self) -> i32 {
+        *self.maps.last_id.get_or_insert_with(|| {
             horizon_client::save::read_dat(&self.world_root.join("data/minecraft/maps/last_id.dat"))
                 .and_then(|t| match t.get("data")?.get("map")? {
                     Tag::Int(v) => Some(*v),
                     _ => None,
                 })
                 .unwrap_or(-1)
-        });
-        self.maps.last_id = Some(last + 1);
-        last + 1
+        })
+    }
+    fn next_map_id(&mut self) -> i32 {
+        let last = self.loaded_last_id();
+        let id = match &self.maps.pool {
+            Some(pool) => pool.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1,
+            None => last + 1,
+        };
+        self.maps.last_id = Some(id);
+        id
     }
     /// The id the next new map gets, without taking it.
     pub(super) fn peek_map_id(&mut self) -> i32 {
-        let id = self.next_map_id();
-        self.maps.last_id = Some(id - 1);
-        id
+        let last = self.loaded_last_id();
+        match &self.maps.pool {
+            Some(pool) => pool.load(std::sync::atomic::Ordering::SeqCst) + 1,
+            None => last + 1,
+        }
+    }
+    /// Lends the map id counter to region game `w`: the server owns the ids, so a map a region's player makes
+    /// (`use_empty_map`) gets an id no other region and no server step hands out. [`Game::take_maps_back`]
+    /// brings the new maps home.
+    pub(super) fn lend_maps(&mut self, w: &mut Game<'_>) {
+        let last = self.loaded_last_id();
+        let pool = self
+            .maps
+            .pool
+            .get_or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicI32::new(last)))
+            .clone();
+        let base = pool.fetch_max(last, std::sync::atomic::Ordering::SeqCst).max(last);
+        w.maps.pool = Some(pool);
+        w.maps.last_id = Some(base);
+        w.maps.lent_base = base;
+    }
+    /// The maps region game `w` made while it was lent (their data is the server's to save) and its ids.
+    pub(super) fn take_maps_back(&mut self, w: &mut Game<'_>) {
+        let base = w.maps.lent_base;
+        let made: Vec<i32> = w.maps.data.keys().copied().filter(|id| *id > base).collect();
+        for id in made {
+            if let Some(m) = w.maps.data.remove(&id) {
+                self.maps.data.insert(id, m);
+            }
+        }
+        w.maps.lent_base = w.maps.pool.as_ref().map_or(-1, |p| p.load(std::sync::atomic::Ordering::SeqCst));
+        self.sync_map_ids();
+    }
+    /// The saved last id follows the shared counter.
+    fn sync_map_ids(&mut self) {
+        if let Some(pool) = &self.maps.pool {
+            let shared = pool.load(std::sync::atomic::Ordering::SeqCst);
+            self.maps.last_id = Some(self.maps.last_id.unwrap_or(-1).max(shared));
+        }
     }
     /// Maps made by exploration map trades: (id, target, zoom, decoration).
     pub(super) fn register_exploration_maps(&mut self, made: Vec<(i32, [i32; 3], u8, String)>) {
@@ -995,6 +1045,9 @@ impl Game<'_> {
             self.maps.data.insert(id, data);
             let last = self.maps.last_id.unwrap_or(-1).max(id);
             self.maps.last_id = Some(last);
+            if let Some(pool) = &self.maps.pool {
+                pool.fetch_max(id, std::sync::atomic::Ordering::SeqCst);
+            }
             self.render_biome_preview(id);
         }
     }
@@ -1672,6 +1725,7 @@ impl Game<'_> {
                 }
             }
         }
+        self.sync_map_ids();
         if let Some(last) = self.maps.last_id {
             let tag = Tag::compound([
                 ("data", Tag::compound([("map", Tag::Int(last))])),

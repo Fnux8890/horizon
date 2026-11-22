@@ -719,6 +719,7 @@ impl Game<'_> {
         // stale record would outlive its id and be inherited by whichever entity reuses it.
         w.prune_entity_memory();
         self.merge_region_scores(w);
+        self.take_maps_back(w);
         self.take_raids_back(w);
         let stand_in = self.world.stand_in();
         let mut region_world = std::mem::replace(&mut w.world, stand_in);
@@ -989,6 +990,7 @@ impl Game<'_> {
             // The level's own settings: a game made for another dimension earlier is this one's now.
             w.copy_world_settings_from(self);
             w.refill_entity_ids(&pool);
+            self.lend_maps(&mut w);
             let conns: Vec<u32> = guests.iter().map(|g| g.conn).collect();
             host.hub.away.extend(conns.iter().copied());
             let mut shell = w.lan.take().unwrap_or_else(|| host.region_shell());
@@ -1507,6 +1509,7 @@ impl Game<'_> {
         self.lend_region(&mut w, part);
         w.copy_world_settings_from(self);
         w.refill_entity_ids(&pool);
+        self.lend_maps(&mut w);
         let conns: Vec<u32> = guests.iter().map(|g| g.conn).collect();
         host.hub.away.extend(conns.iter().copied());
         let mut shell = w.lan.take().unwrap_or_else(|| host.region_shell());

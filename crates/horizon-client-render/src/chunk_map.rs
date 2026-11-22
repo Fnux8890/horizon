@@ -606,7 +606,10 @@ impl ChunkMap {
         if lent.touched_all != 0 || lent.touched_base != 0 {
             self.touch_all();
         } else {
-            for key in lent.touched.drain(..) {
+            // Every returned column, not only the ones touched while lent: `lend` logged none, so a consumer
+            // that fell back to a full re-read during the lend rebuilt without them and would never read an
+            // untouched one again.
+            for key in lent.columns.keys().copied().collect::<Vec<_>>() {
                 self.touch(key);
             }
         }
@@ -917,6 +920,27 @@ mod tests {
         }
         assert_eq!(map.len(), 4);
         assert_eq!(map.membership_revision(), revision);
+    }
+
+    #[test]
+    fn columns_back_from_a_lend_are_all_in_the_touch_log() {
+        let mut map = ChunkMap::default();
+        for x in 0..3 {
+            map.insert((x, 0), Arc::new(Chunk::empty(0, 0)));
+        }
+        let cursor = map.touch_cursor();
+        let parts = map.lend(1, |_| Some(0));
+        for part in parts {
+            map.take_back(part);
+        }
+        // Nothing was touched while lent, yet a consumer that re-read during the lend missed these columns.
+        let mut seen: Vec<_> = map
+            .touched_since(cursor)
+            .expect("log kept")
+            .copied()
+            .collect();
+        seen.sort();
+        assert_eq!(seen, vec![(0, 0), (1, 0), (2, 0)]);
     }
 
     #[test]
