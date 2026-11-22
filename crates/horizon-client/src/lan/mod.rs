@@ -43,6 +43,7 @@ pub mod menu_extra_rev;
 pub mod packet_counts;
 #[cfg(test)]
 mod payload_bounds_tests;
+pub mod ping_ledger;
 pub mod player_shown;
 pub mod playerdata;
 pub mod prediction;
@@ -603,7 +604,7 @@ impl Shared {
             }
         }
         if self.is_online(uuid) {
-            let _ = self.events.send(NetEvent::Duplicate(uuid));
+            let _ = self.events.send_over_budget(NetEvent::Duplicate(uuid));
             let deadline = std::time::Instant::now() + Duration::from_secs(30);
             while self.is_online(uuid) {
                 if std::time::Instant::now() > deadline {

@@ -191,10 +191,12 @@ impl Game<'_> {
     fn run_sign_command(&mut self, pos: [i32; 3], command: &str) {
         let source = self.sign_command_source(pos);
         let line = command.strip_prefix('/').unwrap_or(command);
-        self.exec = Default::default();
         let permission = std::mem::replace(&mut self.ui.registries.permission, 2);
-        let _ = self.execute_line(line, source);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.with_command_frame(|game| game.execute_line(line, source))
+        }));
         self.ui.registries.permission = permission;
+        let _ = result.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
         // InventoryChangeTrigger fires as slots change, not on the next tick.
         if self.player.is_some() {
             self.check_inventory_trigger();
@@ -1020,9 +1022,16 @@ impl Game<'_> {
         horizon_client::widgets::narratable(|| {
             horizon_client::widgets::Narratable::button(done_label(), [bx, by, 200.0, 20.0], true)
         });
+        // AbstractButton.renderDefaultSprite: the highlighted sprite while hovered.
+        let (mx, my) = self.cursor;
+        let hovered = mx >= bx && mx < bx + 200.0 && my >= by && my < by + 20.0;
         batch.sprite_scaled(
             atlas,
-            "gui/sprites/widget/button",
+            if hovered {
+                "gui/sprites/widget/button_highlighted"
+            } else {
+                "gui/sprites/widget/button"
+            },
             bx,
             by,
             200.0,

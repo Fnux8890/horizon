@@ -1800,8 +1800,8 @@ impl Game<'_> {
         self.tick_tridents();
         self.tick_rockets();
         self.tick_ominous_item_spawners();
-        self.tick_items();
-        self.hoppers_catch_items();
+        let original_item_moves = self.tick_items();
+        self.hoppers_catch_items(&original_item_moves);
         self.touch_arrows();
         self.tick_mobs()?;
         self.recheck_golem_openers();
