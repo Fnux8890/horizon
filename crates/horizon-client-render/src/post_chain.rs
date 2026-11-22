@@ -982,7 +982,7 @@ impl PostEffects {
             let block = match name.as_str() {
                 "SamplerInfo" => Block::Info,
                 "Globals" => Block::Globals,
-                "HorizonModEffect" if !p.uniforms.contains_key(name) => {
+                "HorizonModEffect" => {
                     for module in [&program.vertex, &program.fragment] {
                         for (_, var) in module.global_variables.iter() {
                             if var
@@ -2525,7 +2525,17 @@ mod tests {
         let root = scratch("mod_first", &json);
         own_glsl(&root);
         let assets = root.join("assets/minecraft");
-        std::fs::write(assets.join("post_effect/mod_second.json"), &json).unwrap();
+        // The second chain declares a conflicting constant. Its rendered pixels
+        // must still follow the values requested by the mod for this frame.
+        let mut second: serde_json::Value = serde_json::from_str(&json).unwrap();
+        second["passes"][0]["uniforms"] = serde_json::json!({
+            "HorizonModEffect": [{"name": "Cue", "type": "vec4", "value": [0, 0, 0, 0]}]
+        });
+        std::fs::write(
+            assets.join("post_effect/mod_second.json"),
+            second.to_string(),
+        )
+        .unwrap();
         std::fs::write(assets.join("shaders/post/mod_tint.fsh"),
             "#version 330\nuniform sampler2D InSampler;\nlayout(std140) uniform HorizonModEffect { vec4 Cue; };\nlayout(location=0) in vec2 texCoord;\nlayout(location=0) out vec4 fragColor;\nvoid main(){ vec4 c=texture(InSampler, texCoord); fragColor=vec4(c.rgb*Cue.x+Cue.y, c.a); }").unwrap();
         let source = ResourceSource::directory(root.clone());

@@ -643,6 +643,8 @@ the request out stops the effect.
 Put the chain at `assets/<namespace>/post_effect/<path>.json` in your package and use
 an ID in a namespace the package owns. Each translated pass can read four floats
 private to that chain with `layout(std140) uniform HorizonModEffect { vec4 Cue; };`.
+The hook supplies this reserved block each frame, even if the pass JSON declares
+values under `uniforms.HorizonModEffect`.
 Sample the scene from `minecraft:main`, draw to an intermediate target, then blit back
 to main. This keeps every effect's output available to the next one.
 
