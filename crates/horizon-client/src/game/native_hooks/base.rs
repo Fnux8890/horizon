@@ -969,6 +969,15 @@ impl Game<'_> {
     pub(in crate::game) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
         self.fire_shader_params(partial, params);
     }
+    /// Mod-owned post chains for this world frame, independent of shader pack selection.
+    pub(in crate::game) fn native_mod_post_effects(
+        &self,
+        partial: f32,
+        distortion_scale: f32,
+        effects: &mut Vec<mod_api::Answered<mod_api::ModPostEffect>>,
+    ) {
+        self.fire_mod_post_effects(partial, distortion_scale, effects);
+    }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(in crate::game) fn native_minimap(&self, minimap: &mut Option<mod_api::Minimap>) {
         self.fire_minimap(minimap);

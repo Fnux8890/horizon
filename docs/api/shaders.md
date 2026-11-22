@@ -631,3 +631,29 @@ no shadow into a pack's shadow map yet, and the first-person hand has no stage.
 - 2026-11-01: API 0.1 (additions): the material stage's `set_surface` and the post stage's `surface_at` and `scene_surface`: a normal, a smoothness and a value of the pack's own per pixel of solid terrain. Only a material stage that calls `set_surface` pays for the target.
 - 2026-11-01: API 0.1 (additions): `[[materials]] blocks`, ids by block, and `translucent`, moving an id's sprites into the translucent pass. `sprites` may be left out when `blocks` is there.
 - 2026-11-01: API 0.1 (additions): the `[vertex]` stage, `fn vertex(input: VertexInput) -> vec3<f32>`: waving plants and rolling water, in the world and the shadow map.
+
+## Temporary world effects from native mods
+
+A client mod can request a resource-defined post chain for the current world frame through
+`Hooks::mod_post_effects`. This works with the player's selected shader pack and with
+shaders turned off. The world and its existing post effects render first, then the mod
+effects in qualified ID order, then the HUD. The hook runs again next frame. Leaving
+the request out stops the effect.
+
+Put the chain at `assets/<namespace>/post_effect/<path>.json` in your package and use
+an ID in a namespace the package owns. Each translated pass can read four floats
+private to that chain with `layout(std140) uniform HorizonModEffect { vec4 Cue; };`.
+Sample the scene from `minecraft:main`, draw to an intermediate target, then blit back
+to main. This keeps every effect's output available to the next one.
+
+```rust,ignore
+fn mod_post_effects(&self, _: &dyn ClientHost, event: &mut ModPostEffectsEvent<'_>) {
+    let strength = self.recovery_strength() * event.distortion_scale;
+    if strength > 0.0 {
+        event.effects.push(ModPostEffect {
+            id: Identifier::parse("example:focus").unwrap(),
+            params: [strength, 0.0, 0.0, 0.0],
+        });
+    }
+}
+```

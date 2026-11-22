@@ -8435,7 +8435,7 @@ impl Game<'_> {
         let game_ticks = self.world.game_time as f64 + alpha;
         let delta_ticks = (game_ticks - self.polytone_post_ticks).clamp(0.0, 20.0) as f32;
         self.polytone_post_ticks = game_ticks;
-        let polytone_extras = match (&self.pack.polytone_post, &polytone_frame) {
+        let mut polytone_extras = match (&self.pack.polytone_post, &polytone_frame) {
             (Some(post), Some(frame)) => {
                 let view = bob * spin * horizon_client::camera::view_matrix(yaw, pitch);
                 let globals = horizon_client::polytone_post::PolyGlobals {
@@ -8460,6 +8460,31 @@ impl Game<'_> {
             }
             _ => None,
         };
+        if !title && self.player.is_some() {
+            let mut requests = Vec::new();
+            self.native_mod_post_effects(alpha as f32, self.screen_effect_scale(), &mut requests);
+            for entry in requests {
+                let effect = entry.answer;
+                if !mod_api::__private::owns_namespace(entry.mod_id, effect.id.namespace())
+                    || effect
+                        .id
+                        .path()
+                        .split('/')
+                        .any(|p| matches!(p, "" | "." | ".."))
+                {
+                    continue;
+                }
+                let params = effect.params.map(|v| if v.is_finite() { v } else { 0.0 });
+                polytone_extras
+                    .get_or_insert_with(Default::default)
+                    .mod_effects
+                    .insert(effect.id.to_string(), params);
+            }
+            if let Some(extras) = &polytone_extras {
+                requested_post_effects.extend(extras.mod_effects.keys().cloned());
+            }
+        }
+
         self.view_frustum =
             self.world_view_frustum(camera, [fov_degrees, yaw, pitch], bob * spin, depth_far);
         let billboard_frustum = if self.settings.horizon.taa {

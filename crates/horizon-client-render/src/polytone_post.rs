@@ -161,7 +161,7 @@ impl PolytonePost {
         let mut effects = Vec::new();
         let mut extras = Extras {
             targets: self.targets.clone(),
-            blocks: Default::default(),
+            ..Extras::default()
         };
         extras
             .blocks

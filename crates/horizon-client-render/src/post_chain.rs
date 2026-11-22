@@ -23,6 +23,7 @@ use horizon_assets::resource_source::ResourceSource;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc;
+use wgpu::util::DeviceExt;
 
 /// `PostChain.MAIN_TARGET_ID`.
 const MAIN: &str = "minecraft:main";
@@ -387,6 +388,7 @@ enum Block {
     Custom(wgpu::Buffer),
     /// A block the request sets every frame (`Extras::blocks`), by name.
     Dynamic(String, wgpu::Buffer),
+    ModEffect(wgpu::Buffer),
 }
 
 /// A pass running the resources' own GLSL, translated by `post_glsl`.
@@ -484,6 +486,8 @@ pub struct Request<'a> {
 /// declared targets (`post_targets`), kept between frames, and uniform blocks set every frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Extras {
+    /// Private per-chain values for the reserved HorizonModEffect uniform.
+    pub mod_effects: BTreeMap<String, [f32; 4]>,
     pub targets: BTreeMap<String, InternalTarget>,
     /// Each block's std140 bytes, by its name (`PolyGlobals`, an expression uniform's).
     pub blocks: BTreeMap<String, Vec<u8>>,
@@ -978,6 +982,31 @@ impl PostEffects {
             let block = match name.as_str() {
                 "SamplerInfo" => Block::Info,
                 "Globals" => Block::Globals,
+                "HorizonModEffect" if !p.uniforms.contains_key(name) => {
+                    for module in [&program.vertex, &program.fragment] {
+                        for (_, var) in module.global_variables.iter() {
+                            if var
+                                .binding
+                                .as_ref()
+                                .is_some_and(|b| b.group == 0 && b.binding == *binding)
+                                && !matches!(
+                                    &module.types[var.ty].inner,
+                                    naga::TypeInner::Struct { span: 16, .. }
+                                )
+                            {
+                                return Err(format!(
+                                    "pass {n}: HorizonModEffect must be one std140 vec4"
+                                ));
+                            }
+                        }
+                    }
+                    Block::ModEffect(device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Mod post effect parameters"),
+                        size: 16,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }))
+                }
                 other if !p.uniforms.contains_key(other) && extras.blocks.contains_key(other) => {
                     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("Post effect pack uniforms"),
@@ -1321,6 +1350,31 @@ impl PostEffects {
         let depth = depth.and(gl_depth.as_ref().map(|(_, v)| v));
         for id in &applied {
             let mut chain = self.chains.remove(id).flatten().expect("loaded above");
+            let params = req
+                .extras
+                .and_then(|e| e.mod_effects.get(id))
+                .copied()
+                .unwrap_or_default();
+            // Encode the upload before the draw. Two views can use different
+            // values for the same chain within a single queue submission.
+            let mut upload = None;
+            for (_, block) in chain
+                .passes
+                .iter()
+                .filter_map(|p| p.translated.as_ref())
+                .flat_map(|t| &t.blocks)
+            {
+                if let Block::ModEffect(buffer) = block {
+                    let source = upload.get_or_insert_with(|| {
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Mod effect frame values"),
+                            contents: bytemuck::bytes_of(&params),
+                            usage: wgpu::BufferUsages::COPY_SRC,
+                        })
+                    });
+                    encoder.copy_buffer_to_buffer(source, 0, buffer, 0, 16);
+                }
+            }
             self.run_chain(
                 device,
                 queue,
@@ -1486,7 +1540,12 @@ impl PostEffects {
             .collect();
         // PostChain.addToFrame: internal targets at their size, cleared to their
         // colour; a persistent one only when it is made.
-        let remade = chain.size != size || chain.textures.len() + 1 != chain.targets.len();
+        let remade = chain.size != size
+            || chain.textures.len() + 1 != chain.targets.len()
+            || chain
+                .textures
+                .first()
+                .is_some_and(|(texture, _)| texture.format() != format);
         if remade {
             chain.size = size;
             chain.textures = sizes[1..]
@@ -1657,7 +1716,7 @@ impl PostEffects {
             let buffer = match block {
                 Block::Info => &pass.info,
                 Block::Globals => &self.globals,
-                Block::Custom(buffer) => buffer,
+                Block::Custom(buffer) | Block::ModEffect(buffer) => buffer,
                 Block::Dynamic(name, buffer) => {
                     if let Some(bytes) = self.extra_blocks.get(name) {
                         let n = bytes.len().min(UNIFORM_BYTES as usize) & !3;
@@ -2034,6 +2093,17 @@ mod tests {
         root: &ResourceSource,
         names: &[String],
     ) -> (bool, [u8; 4]) {
+        run_with_params(device, queue, effects, root, names, None)
+    }
+
+    fn run_with_params(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        effects: &mut PostEffects,
+        root: &ResourceSource,
+        names: &[String],
+        extras: Option<&Extras>,
+    ) -> (bool, [u8; 4]) {
         let frame = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -2083,7 +2153,7 @@ mod tests {
                 root,
                 menu_blur_radius: 5.0,
                 globals: Globals::default(),
-                extras: None,
+                extras,
             },
             None,
         );
@@ -2438,6 +2508,52 @@ mod tests {
             writer.write_image_data(&[128, 255, 255, 255]).unwrap();
         }
         std::fs::write(effect.join("tint.png"), png_bytes).unwrap();
+    }
+
+    /// Two instances of the same shader use separate parameters and see the
+    /// preceding chain's output. A later frame can omit either request.
+    #[test]
+    fn mod_chains_have_private_frame_parameters() {
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let json = INVERT_THEN_BLIT
+            .replacen("minecraft:core/screenquad", "minecraft:core/quad", 1)
+            .replace("minecraft:post/invert", "minecraft:post/mod_tint")
+            .replace("[1.0, 0.0, 0.5, 1.0]", "[1, 1, 1, 1]");
+        let root = scratch("mod_first", &json);
+        own_glsl(&root);
+        let assets = root.join("assets/minecraft");
+        std::fs::write(assets.join("post_effect/mod_second.json"), &json).unwrap();
+        std::fs::write(assets.join("shaders/post/mod_tint.fsh"),
+            "#version 330\nuniform sampler2D InSampler;\nlayout(std140) uniform HorizonModEffect { vec4 Cue; };\nlayout(location=0) in vec2 texCoord;\nlayout(location=0) out vec4 fragColor;\nvoid main(){ vec4 c=texture(InSampler, texCoord); fragColor=vec4(c.rgb*Cue.x+Cue.y, c.a); }").unwrap();
+        let source = ResourceSource::directory(root.clone());
+        let mut post = PostEffects::new(&device);
+        let ids = [
+            "minecraft:mod_first".to_owned(),
+            "minecraft:mod_second".to_owned(),
+        ];
+        let mut extras = Extras::default();
+        extras
+            .mod_effects
+            .insert(ids[0].clone(), [0.5, 0.0, 0.0, 0.0]);
+        extras
+            .mod_effects
+            .insert(ids[1].clone(), [1.0, 0.2, 0.0, 0.0]);
+        for (ids, expected) in [
+            (&ids[..], [77u8, 102, 128, 255]),
+            (&ids[1..], [102, 153, 204, 255]),
+        ] {
+            let (ran, px) =
+                run_with_params(&device, &queue, &mut post, &source, ids, Some(&extras));
+            assert!(
+                ran && px.iter().zip(expected).all(|(p, e)| p.abs_diff(e) <= 2),
+                "{px:?}"
+            );
+        }
+        assert!(!run_with_params(&device, &queue, &mut post, &source, &[], Some(&extras)).0);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// A chain `preload` loaded arrives with its pipelines compiled on the loading
