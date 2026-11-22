@@ -765,8 +765,6 @@ mod stubs {
     pub(super) struct MapDecoration;
     pub(super) struct MapInfo<'a>(pub &'a ());
     pub(super) struct PlayerRender<'a>(pub &'a ());
-    #[derive(Clone)]
-    pub(super) struct ModPostEffect;
     pub(super) struct PosedParts;
     pub(super) struct HiddenParts;
     pub(super) struct Command;
@@ -786,6 +784,8 @@ mod stubs {
 }
 
 mod api {
+    #[derive(Clone)]
+    pub struct ModPostEffect;
     #[derive(Clone, Copy)]
     #[non_exhaustive]
     pub struct FluidState {
