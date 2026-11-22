@@ -1692,7 +1692,7 @@ impl Game<'_> {
             lines.extend(host.hub.region_chat_out.drain(..).map(|l| (0, l)));
         }
         let mut sets: Vec<&mut ResidentSet> = Vec::new();
-        sets.extend(mine.as_deref_mut());
+        sets.extend(mine);
         sets.extend(self.regions.resident.values_mut());
         sets.extend(self.regions.flight.as_mut().map(|(_, f)| &mut f.set));
         for set in &mut sets {

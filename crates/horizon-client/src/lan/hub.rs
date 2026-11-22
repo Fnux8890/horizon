@@ -3222,9 +3222,9 @@ impl Hub {
     /// holds none of its words and nobody is muted. A text it would refuse is for the server's thread, which
     /// counts the hit and tells the sender.
     fn chat_filter_passes(&self, text: &str) -> bool {
-        self.chat_filter.as_deref().is_none_or(|guard| {
-            !guard.matches(text) && guard.mutes(chat::now_millis()).is_empty()
-        })
+        self.chat_filter
+            .as_deref()
+            .is_none_or(|guard| !guard.matches(text) && guard.mutes(chat::now_millis()).is_empty())
     }
 
     /// Whether an away player sent a command, or a chat message that its region cannot relay ([`Hub::away_local`]):
