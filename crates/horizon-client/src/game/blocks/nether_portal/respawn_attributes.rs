@@ -15,6 +15,9 @@ pub(in crate::game) struct RespawnAttributes {
     /// A respawn packet came: whether it keeps the modifiers.
     keep_modifiers: Option<bool>,
     carried: Option<Carried>,
+    /// `UpdateAttributes` of the player's own entity that came while there was no player and no
+    /// respawn to carry from: a login's, whose `LocalPlayer` vanilla already has.
+    login_early: Vec<Vec<AttributeSnapshot>>,
 }
 
 struct Carried {
@@ -53,6 +56,7 @@ impl Game<'_> {
             (Some(_), None) => {}
             (None, _) => respawn.carried = None,
         }
+        respawn.login_early.clear();
         self.remove_local_player_body();
     }
 
@@ -62,6 +66,8 @@ impl Game<'_> {
             apply(&mut player.attributes, &values);
         } else if let Some(carried) = self.portals.respawn_attributes.carried.as_mut() {
             carried.early.push(values);
+        } else {
+            self.portals.respawn_attributes.login_early.push(values);
         }
     }
 
@@ -70,6 +76,9 @@ impl Game<'_> {
         &mut self,
         player: &mut PlayerMotion,
     ) -> Result<()> {
+        for values in std::mem::take(&mut self.portals.respawn_attributes.login_early) {
+            apply(&mut player.attributes, &values);
+        }
         let Some(carried) = self.portals.respawn_attributes.carried.take() else {
             return Ok(());
         };
