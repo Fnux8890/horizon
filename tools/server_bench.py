@@ -407,6 +407,9 @@ def server_command(kind, directory, args):
     if args.dab:
         # Mob AI far from players (docs/hosting.md): the defaults of Pufferfish's DAB.
         toml.write_text(toml.read_text() + '\n[entities]\ndab = true\n')
+    if args.regions:
+        # Region ticking (docs/hosting.md, "Regions"), with its default deadline and resident ticks.
+        toml.write_text(toml.read_text() + '\n[regions]\nenabled = true\n')
     return [server, '--dir', directory, 'run']
 
 
@@ -707,6 +710,9 @@ def main():
                         help='summon this many mobs ~100 blocks from the spawn, away from the bots (the DAB fixture)')
     parser.add_argument('--anticheat', action='store_true',
                         help="turn Horizon's anticheat on (server.toml [anticheat]); its flags are counted")
+    parser.add_argument('--regions', action='store_true',
+                        help="tick the world by regions (server.toml [regions] enabled); Horizon only. With "
+                             'HORIZON_BENCH_GRID=500 every bot stands in a region of its own')
     parser.add_argument('--ground', action='store_true',
                         help='a flat survival world, the bots walking on its ground and saying so in every move '
                              "(what the anticheat's ground check judges)")
