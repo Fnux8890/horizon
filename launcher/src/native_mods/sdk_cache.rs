@@ -181,7 +181,8 @@ pub fn shown(commit: &str, nightly: Option<&str>) -> String {
     }
 }
 
-/// Build `commit`'s Nightly name, from its kept index or an installed version made from it.
+/// Build `commit`'s name (a Nightly's, or a numbered release's), from its kept index or an installed version
+/// made from it.
 fn nightly_of(commit: &str) -> Option<String> {
     if !super::is_revision(commit) {
         return None;
@@ -195,6 +196,18 @@ fn nightly_of(commit: &str) -> Option<String> {
                 .into_iter()
                 .find(|tag| tag.starts_with("nightly-") && tag.ends_with(&commit[..7]))
         })
+        .or_else(|| numbered_release_of(commit))
+}
+
+/// The installed numbered release (`v0.3.1`) made from `commit`, named by the commit its SDK
+/// index gave when it was first read (`versions/<tag>`): a release is named by its number, as
+/// a Nightly was by its date.
+fn numbered_release_of(commit: &str) -> Option<String> {
+    let kept = root().join("versions");
+    crate::backend::installed()
+        .into_iter()
+        .filter(|tag| crate::nightly::is_numbered_release(tag))
+        .find(|tag| fs::read_to_string(kept.join(tag)).is_ok_and(|text| text.trim() == commit))
 }
 
 /// Build `commit`'s name as the Versions page gives it, when it is known here (a kept index, or

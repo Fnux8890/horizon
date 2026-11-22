@@ -167,7 +167,7 @@ pub struct Meta {
     /// launcher's own version, which follows updates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// The builds "latest" means for it; missing is [`Channel::Nightly`].
+    /// The channel an older launcher saved (Stable or Nightly): read, never used; there is one channel now.
     #[serde(
         default,
         deserialize_with = "saved_channel",
@@ -408,7 +408,9 @@ fn list_in(game_home: &Path, data: &Path) -> Vec<Instance> {
                 icon: meta.icon,
                 group: meta.group,
                 version: meta.version,
-                channel: meta.channel.unwrap_or_default(),
+                // One channel: every instance follows the latest release. A saved Stable choice is read
+                // (old files load) and ignored.
+                channel: Channel::Nightly,
                 native_profile: meta
                     .native_profile
                     .unwrap_or(crate::native_mods::Profile::Optimized),

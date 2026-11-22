@@ -9,7 +9,7 @@ The compiled slices exist once per [host](06-hosts.md); a file named `…-server
 Everything else exists once per build. `.tar.xz` files are tar archives compressed with xz; `surface.json` is the
 file itself.
 
-A Nightly carries a copy of its build's `sdk.json` in its own signed sums. The launcher learns which build a game is
+A game release (a numbered release, or a Nightly from before them) carries a copy of its build's `sdk.json` in its own signed sums. The launcher learns which build a game is
 from the copy in that game's release, and keeps the answer, so it is known offline afterwards.
 
 This describes the restored publication contract, not a claim that every main commit already has an SDK.
@@ -39,7 +39,7 @@ number, removing or redefining one changes it.
 | `build.commit` | The build id: the game's full commit sha. |
 | `build.game` | The vanilla version the build implements (`26.3`). |
 | `build.date` | The commit's date, `YYYY-MM-DD`, UTC. |
-| `build.nightly` | The Nightly name that ships this build, when one does. |
+| `build.nightly` | The Nightly name that ships this build, when one does. A numbered release is found by its commit: the SDK is named by the commit, as the release is built from it (`v0.3.1` and `sdk-<commit>` are the same build). |
 | `package_format` | The prebuilt package's layout number. A reader takes only the number it was made for. |
 | `toolchain.rust` | The Rust release everything in the SDK was compiled with. |
 | `content_api` | The content manifest's version: the `api` key of `horizon-mod.toml`. |

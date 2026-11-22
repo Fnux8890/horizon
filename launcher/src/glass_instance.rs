@@ -7,7 +7,6 @@ use super::*;
 use crate::glass_ui::{self as ui, white};
 use horizon_launcher::instances::{self, Channel, Icon, Instance};
 use horizon_launcher::loaders::Kind as Loader;
-use horizon_launcher::nightly::{stable_builds, StableBuild};
 use horizon_theme::glass::{fill, ink, radius};
 use new_instance::{NewKind, VersionList};
 use servers_page::Field;
@@ -269,34 +268,15 @@ impl Launcher {
     /// The Horizon version an instance plays: the one it keeps, else the one it follows.
     pub(super) fn draft_horizon(&self) -> Option<String> {
         let d = self.instances.dialog.as_ref()?;
-        d.pin.clone().or_else(|| self.followed_version(d.channel))
+        d.pin.clone().or_else(|| self.followed_version())
     }
 
-    /// The version an instance that keeps none plays: on Stable the newest stable build (Create
-    /// installs it), on Nightly the launcher's, or with none installed yet, the newest Nightly.
-    fn followed_version(&self, channel: Channel) -> Option<String> {
-        let nightly = || {
-            self.launcher_version()
-                .cloned()
-                .or_else(|| self.horizon_choices().into_iter().next())
-        };
-        match channel {
-            Channel::Stable => self
-                .stable_builds()
-                .into_iter()
-                .next()
-                .map(|b| b.tag)
-                .or_else(nightly),
-            Channel::Nightly => nightly(),
-        }
-    }
-
-    /// The Stable channel's builds, newest first (none until the release list is here).
-    pub(super) fn stable_builds(&self) -> Vec<StableBuild> {
-        match &self.releases {
-            Load::Ready(r) => stable_builds(r),
-            _ => Vec::new(),
-        }
+    /// The version an instance that keeps none plays: the launcher's, which follows each new release, or with
+    /// none installed yet, the newest listed.
+    fn followed_version(&self) -> Option<String> {
+        self.launcher_version()
+            .cloned()
+            .or_else(|| self.horizon_choices().into_iter().next())
     }
 
     /// Whether Home's Stable update has to wait: another download runs or is queued, and the
@@ -617,13 +597,16 @@ impl Launcher {
     }
 }
 
-/// Every Nightly published with a build for this platform, newest first, then the installed
-/// versions that list lacks (older Nightlies, imported builds). Picking one not installed installs
-/// it on Create.
+/// Every numbered release (after the Nightlies) and Nightly published with a build for this platform, newest
+/// first, then the installed versions that list lacks (older builds, imported ones). Picking one not installed
+/// installs it on Create.
 pub(super) fn horizon_choices(releases: &[Release], installed: &[String]) -> Vec<String> {
     let published = releases
         .iter()
-        .filter(|r| r.nightly.is_some() && r.asset.is_some())
+        .filter(|r| {
+            (r.nightly.is_some() || horizon_launcher::nightly::is_numbered_release(&r.tag))
+                && r.asset.is_some()
+        })
         .map(|r| &r.tag);
     let mut out: Vec<String> = Vec::new();
     for tag in published.chain(installed) {
@@ -1027,28 +1010,27 @@ impl Launcher {
             .child(buttons.flex_none())
     }
 
-    /// Horizon's version: the channel (Stable or Nightly), then a dropdown of its builds, newest
-    /// first, under "Latest" (which follows each new one). Any other pick is kept, and installed
-    /// on Create when it isn't yet.
+    /// Horizon's version: a dropdown of the releases, newest first, under "Latest" (which follows each new one).
+    /// Any other pick is kept, and installed on Create when it isn't yet.
     pub(super) fn horizon_versions(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let soft = self.look.accent_soft;
         let Some(d) = self.instances.dialog.as_ref() else {
             return div();
         };
-        let (channel, pin) = (d.channel, d.pin.clone());
+        let pin = d.pin.clone();
         let open = self.version_menu;
-        let stable = self.stable_builds();
         let all = self.horizon_choices();
-        let nightly = |tag: &String| horizon_launcher::nightly::date_of(tag).is_some();
-        let builds: Vec<String> = match channel {
-            Channel::Stable => stable.iter().map(|b| b.tag.clone()).collect(),
-            Channel::Nightly => all.iter().filter(|t| nightly(t)).cloned().collect(),
+        // The numbered releases and the Nightlies before them: Horizon's one channel.
+        let current_build = |tag: &String| {
+            horizon_launcher::nightly::date_of(tag).is_some()
+                || horizon_launcher::nightly::is_numbered_release(tag)
         };
-        // Developer and imported builds, and a kept one this channel doesn't list.
+        let builds: Vec<String> = all.iter().filter(|t| current_build(t)).cloned().collect();
+        // Developer and imported builds, older releases, and a kept one this list doesn't hold.
         let mut others: Vec<String> = all
             .into_iter()
-            .filter(|t| !nightly(t) && !builds.contains(t))
+            .filter(|t| !current_build(t) && !builds.contains(t))
             .collect();
         if let Some(p) = pin
             .as_ref()
@@ -1056,58 +1038,26 @@ impl Launcher {
         {
             others.push(p.clone());
         }
-        let name = |tag: &str| match stable
-            .iter()
-            .find(|b| b.tag == tag && channel == Channel::Stable)
-            .and_then(|b| b.week.as_deref())
-        {
-            Some(week) => trf(
-                "Week of {date}",
-                &[("date", &glass_versions::published(week, ""))],
-            ),
-            None => self.version_label(tag),
-        };
-        let this = cx.entity().downgrade();
-        let segs = ui::segments(
-            "instance-channel",
-            &[(Channel::Stable, "Stable"), (Channel::Nightly, "Nightly")],
-            channel,
-            &t,
-            move |pick, _, cx| {
-                let _ = this.update(cx, |this, cx| {
-                    if let Some(d) = this.instances.dialog.as_mut().filter(|d| d.channel != pick) {
-                        // A kept build of the other channel would be odd: follow its latest.
-                        d.channel = pick;
-                        d.pin = None;
-                    }
-                    this.version_menu = false;
-                    cx.notify();
-                });
-            },
-        );
-        // Latest on Nightly plays the version picked on Versions: an older one Use picked is
-        // named, never called the latest.
-        let held = self
-            .held_version()
-            .filter(|_| channel == Channel::Nightly)
-            .map(|tag| self.version_name(tag));
+        let name = |tag: &str| self.version_label(tag);
+        // Latest plays the version picked on Versions: an older one Use picked is named, never
+        // called the latest.
+        let held = self.held_version().map(|tag| self.version_name(tag));
         // The way back through Versions is only for an instance following Latest, not one that
         // keeps its own build.
-        let note =
-            ui::text(13., FontWeight::NORMAL, ink::QUIET)
-                .child(match (channel, held.as_ref().filter(|_| pin.is_none())) {
-                (Channel::Stable, _) => tr("One build a week, fewer surprises").to_string(),
-                (Channel::Nightly, None) => tr("Every day's build: newest, may break").to_string(),
-                (Channel::Nightly, Some(_)) if self.use_sets_selection() => tr(
-                    "Every day's build. Another version was picked on Versions: press Use on the \
-                     newest there to follow new ones again.",
+        let note = ui::text(13., FontWeight::NORMAL, ink::QUIET).child(
+            match held.as_ref().filter(|_| pin.is_none()) {
+                None => tr("The newest release, kept up to date.").to_string(),
+                Some(_) if self.use_sets_selection() => tr(
+                    "Another version was picked on Versions: press Use on the newest there to \
+                     follow new ones again.",
                 )
                 .to_string(),
-                (Channel::Nightly, Some(_)) => trf(
-                    "Every day's build. Another version was picked on Versions. {how}.",
+                Some(_) => trf(
+                    "Another version was picked on Versions. {how}.",
                     &[("how", &self.follow_again_hint())],
                 ),
-            });
+            },
+        );
         let current = match (&pin, &held) {
             (None, Some(held)) => trf("{version} (picked on Versions)", &[("version", held)]),
             (None, None) => tr("Latest").to_string(),
@@ -1222,7 +1172,6 @@ impl Launcher {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(div().flex().child(segs))
             .child(note)
             .child(div().mt(px(6.)).child(button))
             .children(open.then_some(list));
@@ -1490,5 +1439,21 @@ mod tests {
         );
         // Offline, or before the list arrives: what is installed.
         assert_eq!(horizon_choices(&[], &installed), installed);
+    }
+
+    #[test]
+    fn a_numbered_release_leads_the_dialog_over_the_nightlies_before_it() {
+        let releases = [
+            release("v0.3.1", false, true),
+            release("v0.3.0", false, true),
+            release("nightly-2026-11-03-aaaaaaa", true, true),
+            // A release of the line before the Nightlies, and a pre-release of the new one: not offered.
+            release("v0.2.1", false, true),
+            release("v0.3.2-rc.1", false, true),
+        ];
+        assert_eq!(
+            horizon_choices(&releases, &[]),
+            ["v0.3.1", "v0.3.0", "nightly-2026-11-03-aaaaaaa"]
+        );
     }
 }

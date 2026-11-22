@@ -597,7 +597,7 @@ impl Launcher {
             .child(tile(
                 self.horizon_mark(42.),
                 "Horizon".into(),
-                installed.unwrap_or_else(|| tr("Nightly").to_string()),
+                installed.unwrap_or_else(|| tr("Latest").to_string()),
                 div()
                     .flex()
                     .flex_col()
@@ -730,15 +730,12 @@ impl Launcher {
 
     /// About's version line, with a button that copies it (for a bug report).
     fn version_row(&self, t: &Theme) -> Div {
-        let nightly = tr("Nightly").to_string();
+        let latest = tr("Latest").to_string();
         let line = trf(
             "Launcher {launcher}, game {game}",
             &[
                 ("launcher", env!("CARGO_PKG_VERSION")),
-                (
-                    "game",
-                    self.settings.selected.as_deref().unwrap_or(&nightly),
-                ),
+                ("game", self.settings.selected.as_deref().unwrap_or(&latest)),
             ],
         )
         .to_string();

@@ -343,6 +343,14 @@ pub fn install_stable(
     }
 }
 
+/// Whether `tag` is a numbered release made after the Nightlies (`v0.3.1`): a release (no pre-release suffix) newer
+/// than [`LAST_BEFORE_NIGHTLIES`]. Horizon's one channel is these, and the Nightlies before them.
+pub fn is_numbered_release(tag: &str) -> bool {
+    backend::is_game_tag(tag)
+        && !tag.contains('-')
+        && backend::compare_versions(tag, LAST_BEFORE_NIGHTLIES).is_gt()
+}
+
 /// What a Stable instance set to Latest plays, from the installed builds alone (`selected`: the
 /// launcher's version): the newest release after [`LAST_BEFORE_NIGHTLIES`]; else the launcher's
 /// version, unless it is a release from before the Nightlies; else the newest Nightly. None when
@@ -385,6 +393,23 @@ mod tests {
             asset: asset.then(|| ("horizon.tar.gz".into(), 1)),
             prerelease: false,
             nightly: nightly.then(|| "nightly".into()),
+        }
+    }
+
+    #[test]
+    fn numbered_releases_after_the_nightlies_are_the_current_builds() {
+        for tag in ["v0.3.0", "v0.3.17", "v1.0.0"] {
+            assert!(is_numbered_release(tag), "{tag}");
+        }
+        for tag in [
+            "v0.2.97",
+            "v0.2.1",
+            "v2026.10.21",
+            "v0.3.0-rc.1",
+            "nightly-2026-11-03-aaaaaaa",
+            "launcher@0.3.0",
+        ] {
+            assert!(!is_numbered_release(tag), "{tag}");
         }
     }
 
