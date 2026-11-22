@@ -765,6 +765,8 @@ mod stubs {
     pub(super) struct MapDecoration;
     pub(super) struct MapInfo<'a>(pub &'a ());
     pub(super) struct PlayerRender<'a>(pub &'a ());
+    #[derive(Clone)]
+    pub(super) struct ModPostEffect;
     pub(super) struct PosedParts;
     pub(super) struct HiddenParts;
     pub(super) struct Command;

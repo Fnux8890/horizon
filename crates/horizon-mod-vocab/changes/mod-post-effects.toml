@@ -1,0 +1,2 @@
+ids = ["hook:mod_post_effects", "type:ModPostEffect"]
+why = "A native client mod can request its resource-defined post chain for the current frame. The renderer applies the chain over the selected lighting pack and before the HUD, with four private per-frame shader parameters."
